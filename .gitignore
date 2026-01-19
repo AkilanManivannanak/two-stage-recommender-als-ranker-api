@@ -1,0 +1,12 @@
+# data (do not commit datasets)
+data/raw/
+data/processed/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# generated artifacts
+artifacts/
+reports/
