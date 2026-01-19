@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 
@@ -96,7 +97,7 @@ def main() -> None:
     manifest = {
         "bundle_version": "v1",
         "git_commit": try_git_commit(),
-        "created_at_utc": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "paths": {
             "als": "als/",
             "ranker_model": "ranker/model.txt",
