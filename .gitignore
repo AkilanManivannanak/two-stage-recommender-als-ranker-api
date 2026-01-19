@@ -10,3 +10,4 @@ __pycache__/
 # generated artifacts
 artifacts/
 reports/
+.DS_Store
