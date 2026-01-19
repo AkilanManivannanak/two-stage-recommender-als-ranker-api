@@ -30,6 +30,6 @@ python scripts/train_ranker_lgbm.py
 
 # Faster CI: you should later add a flag to bootstrap_ci_report.py to use fewer resamples (e.g., 200).
 python scripts/bootstrap_ci_report.py
-python scripts/gate.py
+python scripts/gate.py --mode ci
 
 echo "[OK] CI smoke passed"
