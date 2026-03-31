@@ -336,6 +336,13 @@ netflix-recsys-complete/
 | Voice | Click CINEWAVE | Intent extraction, multi-genre interleaving, TTS |
 | A/B Dashboard | `localhost:3000/abtest` | 4 live experiments with p-values and metric lifts |
 | AI Stack | `localhost:3000/aistack` | All 13 components: RAG, ALS, LightGBM, RL, PySpark, Scala, Metaflow, Kafka, GPT-4o |
+| API Docs | `localhost:8000/docs` | FastAPI Swagger UI — all 13 endpoints live |
+| Airflow | `localhost:8000` | FastAPI Swagger UI — all 13 endpoints live |
+| API Health | `localhost:8000/healthz` | Service status, model version, bundle load time |
+| Eval Metrics | `localhost:3000/eval` | Slice NDCG by genre and user activity decile |
+| Metrics | `localhost:3000/metrics` | Request counts, latency histogram, policy version |
+| Version | `localhost:3000/version` | Bundle metadata, run_id, feature importance |
+
 
 ---
 
