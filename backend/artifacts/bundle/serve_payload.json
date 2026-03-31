@@ -1,0 +1,9 @@
+{
+  "generated_by": "generate-movies-db.mjs",
+  "source": "TMDB",
+  "generated_at": "2026-03-20T05:18:19.614Z",
+  "metrics": {},
+  "feature_importance": {},
+  "feature_cols": [],
+  "movie_count": 1200
+}
