@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST="{\"components/Navbar.tsx -> ./VoiceModal\":{\"id\":\"components/Navbar.tsx -> ./VoiceModal\",\"files\":[\"static/chunks/_app-pages-browser_components_VoiceModal_tsx.js\"]}}"

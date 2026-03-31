@@ -1,0 +1,400 @@
+# Netflix-Inspired Recommendation Platform — Production-Grade Free Stack
+# ======================================================================
+# Stack: FastAPI + Postgres + Redis + MinIO + Qdrant + DuckDB + Metaflow
+#
+# Start all core services:   docker compose up -d
+# Run pipeline:              docker compose --profile pipeline up metaflow_runner
+# Run analytics:             docker compose --profile analytics up duckdb_job
+# Run workers:               docker compose --profile workers up
+# Stop:                      docker compose down
+# Reset everything:          docker compose down -v
+
+networks:
+  recsys_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:
+  metaflow_data:
+  duckdb_data:
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════
+  # CORE SERVICES  (always running)
+  # ════════════════════════════════════════════════════════════════════
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - BUNDLE_REF=/app/artifacts/bundle
+      - LOG_DIR=/app/logs
+      - ENV=production
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - recsys_net
+    command: >
+      uvicorn recsys.serving.app:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --timeout-keep-alive 30
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: recsys_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: recsys
+      POSTGRES_USER: recsys
+      POSTGRES_PASSWORD: recsys
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - recsys_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recsys -d recsys"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: recsys_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - recsys_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: recsys_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - recsys_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  minio_init:
+    image: minio/mc:latest
+    container_name: recsys_minio_init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - recsys_net
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/recsys-artifacts;
+      mc mb --ignore-existing local/recsys-models;
+      mc mb --ignore-existing local/recsys-embeddings;
+      mc mb --ignore-existing local/recsys-logs;
+      mc mb --ignore-existing local/recsys-reports;
+      echo 'MinIO buckets ready';
+      "
+
+  # Fix: removed Qdrant healthcheck dependency from api
+  # Qdrant is optional — API runs without it using in-memory index
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: recsys_qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - recsys_net
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__TELEMETRY_DISABLED=true
+    healthcheck:
+      # Use TCP check instead of HTTP — works on Apple Silicon M1/M2/M3
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' && echo ok || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ════════════════════════════════════════════════════════════════════
+  # PIPELINE SERVICES  (docker compose --profile pipeline up ...)
+  # ════════════════════════════════════════════════════════════════════
+
+  metaflow_runner:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_metaflow
+    restart: "no"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
+      - METAFLOW_DATASTORE_SYSROOT_LOCAL=/app/artifacts
+      - USERNAME=metaflow
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - recsys_net
+    command: >
+      python flows/phenomenal_flow_v3.py run
+      --use_real_data True
+      --mmr_penalty 0.25
+    
+    profiles:
+      - pipeline
+
+  agent_ops_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_agent_ops
+    restart: "no"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    depends_on:
+      - postgres
+    networks:
+      - recsys_net
+    command: python infra/workers/agent_ops_worker.py
+    profiles:
+      - pipeline
+
+  # ════════════════════════════════════════════════════════════════════
+  # ANALYTICS  (docker compose --profile analytics up duckdb_job)
+  # ════════════════════════════════════════════════════════════════════
+
+  duckdb_job:
+    image: python:3.11-slim
+    container_name: recsys_duckdb
+    restart: "no"
+    volumes:
+      - duckdb_data:/data
+      - metaflow_data:/artifacts
+      - ./backend:/app
+      - ./frontend/public/reports:/reports
+    networks:
+      - recsys_net
+    environment:
+      - ARTIFACTS_DIR=/artifacts
+      - REPORTS_DIR=/reports
+    command: >
+      /bin/sh -c "
+      pip install duckdb pandas pyarrow numpy --quiet &&
+      python /app/infra/duckdb/run_offline_eval.py
+      "
+    profiles:
+      - analytics
+
+  # ════════════════════════════════════════════════════════════════════
+  # WORKERS  (docker compose --profile workers up)
+  # ════════════════════════════════════════════════════════════════════
+
+  embedding_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_embedding_worker
+    restart: "no"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    depends_on:
+      - minio
+      - qdrant
+    networks:
+      - recsys_net
+    command: python infra/workers/embedding_worker.py
+    profiles:
+      - workers
+
+  llm_enrichment_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_llm_enrichment
+    restart: "no"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    networks:
+      - recsys_net
+    command: python infra/workers/llm_enrichment_worker.py
+    profiles:
+      - workers
+
+  vlm_audit_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: recsys_vlm_audit
+    restart: "no"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./backend:/app
+      - metaflow_data:/app/artifacts
+    networks:
+      - recsys_net
+    command: python infra/workers/vlm_audit_worker.py
+    profiles:
+      - workers
+
+
+  # ════════════════════════════════════════════════════════════════════
+  # AIRFLOW  (docker compose --profile airflow up)
+  # Schedules the daily pipeline and monitors SLAs
+  # ════════════════════════════════════════════════════════════════════
+
+  airflow:
+    image: apache/airflow:2.9.0-python3.11
+    container_name: recsys_airflow
+    restart: unless-stopped
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://recsys:recsys@postgres:5432/recsys_airflow
+      - AIRFLOW__CORE__FERNET_KEY=ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=
+      - AIRFLOW__WEBSERVER__SECRET_KEY=recsys-secret-key-change-in-production
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - _AIRFLOW_DB_MIGRATE=true
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin
+    volumes:
+      - ./backend/airflow/dags:/opt/airflow/dags
+      - ./backend:/opt/airflow/recsys
+      - metaflow_data:/opt/airflow/recsys/artifacts
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - recsys_net
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username admin --password admin
+        --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true &&
+      airflow webserver & airflow scheduler
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    profiles:
+      - airflow
+
+  # ════════════════════════════════════════════════════════════════════
+  # FRONTEND  (docker compose --profile frontend up frontend)
+  # ════════════════════════════════════════════════════════════════════
+
+  frontend:
+    image: node:20-alpine
+    container_name: recsys_frontend
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000
+      - NODE_ENV=production
+    command: sh -c "npm install && npm run build && npm start"
+    depends_on:
+      - api
+    networks:
+      - recsys_net
+    profiles:
+      - frontend
