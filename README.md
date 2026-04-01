@@ -11,7 +11,7 @@
  ╚═════╝╚═╝╚═╝  ╚═══╝╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝  ╚═══╝  ╚══════╝
 ```
 
-### Production-Grade ML Recommendation System
+### ML Recommendation System
 
 *Built by [Akilan Manivannan](https://www.linkedin.com/in/akilan-manivannan-a178212a7/) · MS in Artificial Intelligence*
 
