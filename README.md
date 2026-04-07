@@ -1,4 +1,5 @@
 <div align="center">
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:141414,50:E50914,100:B20710&height=120&section=footer" width="100%"/>
 
 <!-- ═══════════════════ HERO BANNER ═══════════════════ -->
 
@@ -667,3 +668,6 @@ netflix-recsys-complete/
 *Python · FastAPI · PySpark · Scala · LightGBM · Qdrant · Redis · Kafka · Metaflow · Airflow · DuckDB · Next.js 14 · Docker*
 
 </div>
+
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:141414,50:E50914,100:B20710&height=120&section=footer" width="100%"/>
