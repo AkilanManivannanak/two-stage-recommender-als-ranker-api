@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:141414,50:E50914,100:B20710&height=120&section=footer" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:141414,50:E50914,100:B20710&height=220&section=header" width="100%"/>
 
 <!-- ═══════════════════ HERO BANNER ═══════════════════ -->
 
