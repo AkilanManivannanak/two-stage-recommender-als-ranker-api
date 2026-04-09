@@ -90,6 +90,14 @@ export default function Navbar() {
               <span className="hidden sm:inline">AI STACK</span>
             </Link>
 
+            {/* ML Intelligence */}
+            <Link href="/ml"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono border border-cine-border hover:border-red-400/40 text-cine-text-dim hover:text-red-300 transition-all duration-200"
+              title="ML Intelligence Dashboard">
+              <span>⚡</span>
+              <span className="hidden sm:inline">ML</span>
+            </Link>
+
             {/* Author name */}
             <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono border border-cine-border/50 text-cine-text-dim select-none">
               <svg className="w-3 h-3 opacity-60" fill="currentColor" viewBox="0 0 24 24">

@@ -6,7 +6,7 @@ import { HERO_BACKDROPS } from '@/lib/utils'
 import FilmReelLogo from './FilmReelLogo'
 import type { DemoUser } from '@/lib/api'
 
-const PROFILE_NAMES = ['Cinephile', 'Action Fan', 'Indie Lover', 'Blockbuster', 'Art House']
+const PROFILE_NAMES = ['Cinephile', 'Action Fan', 'Indie Lover', 'Blockbuster', 'Art House', 'Rom-Com Fan', 'Sci-Fi Buff', 'Documentary']
 
 const PROFILE_IMAGES = [
   'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop&q=80',
