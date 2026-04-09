@@ -1,10 +1,4 @@
 {
-  "app/abtest/page.tsx -> @/components/ABDashboard": {
-    "id": "app/abtest/page.tsx -> @/components/ABDashboard",
-    "files": [
-      "static/chunks/_app-pages-browser_components_ABDashboard_tsx.js"
-    ]
-  },
   "components/Navbar.tsx -> ./VoiceModal": {
     "id": "components/Navbar.tsx -> ./VoiceModal",
     "files": [

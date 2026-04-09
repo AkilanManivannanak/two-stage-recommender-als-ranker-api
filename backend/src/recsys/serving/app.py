@@ -1564,6 +1564,9 @@ def cold_start_recommend(user_id: int, genres: str = Query(""), k: int = Query(1
     if not recs:
         recs = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
         stage = "popularity_fallback"
+    if not recs:
+        recs = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
+        stage = "popularity_fallback"
     return {
         "user_id": uid,
         "stage": stage,
