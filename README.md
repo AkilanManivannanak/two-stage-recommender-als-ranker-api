@@ -116,16 +116,16 @@ Two-job pipeline on every push to `main`:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              USER BROWSER                                        │
-│                         Next.js 14  ·  TypeScript  ·  Tailwind CSS             │
-│         Home · Voice AI · A/B Dashboard · AI Stack · ML Dashboard · Eval       │
+│                              USER BROWSER                                       │
+│                         Next.js 14  ·  TypeScript  ·  Tailwind CSS              │
+│         Home · Voice AI · A/B Dashboard · AI Stack · ML Dashboard · Eval        │
 └────────────────────────────────┬────────────────────────────────────────────────┘
                                  │  HTTP
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           FASTAPI  :8000  ·  92 Endpoints                        │
-│   /recommend  /voice  /explain  /feedback  /impressions  /healthz  /ope/eval   │
-│   /ab/experiments  /slice/ndcg  /clip/search  /metaflow/status  /kafka/status  │
+│                           FASTAPI  :8000  ·  92 Endpoints                       │
+│   /recommend  /voice  /explain  /feedback  /impressions  /healthz  /ope/eval    │
+│   /ab/experiments  /slice/ndcg  /clip/search  /metaflow/status  /kafka/status   │
 └──────┬──────────────────┬───────────────────┬───────────────────┬───────────────┘
        │                  │                   │                   │
        ▼                  ▼                   ▼                   ▼
@@ -141,17 +141,17 @@ Two-job pipeline on every push to `main`:
                                                                    │
                                                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              STAGE 05  ·  SLATE OPTIMIZER                        │
-│   ≥5 genres/page  ·  ≤3 per genre  ·  ≥1 top-user-genre  ·  Jaccard ≥ 0.6      │
+│                              STAGE 05  ·  SLATE OPTIMIZER                       │
+│   ≥5 genres/page  ·  ≤3 per genre  ·  ≥1 top-user-genre  ·  Jaccard ≥ 0.6       │
 └──────────────────────────────────────┬──────────────────────────────────────────┘
                                        │
                     ┌──────────────────┼──────────────────┐
                     ▼                  ▼                  ▼
             ┌─────────────┐   ┌─────────────┐   ┌─────────────────┐
-            │    REDIS     │   │   KAFKA     │   │    METAFLOW     │
-            │ Feature store│   │ 3 topics    │   │ 12-step DAG     │
-            │ Session cache│   │ Flink→PG    │   │ Airflow trigger │
-            │ Bandit wts   │   │ Real-time   │   │ Nightly retrain │
+            │    REDIS    │   │   KAFKA     │   │    METAFLOW     │
+            │Feature store│   │ 3 topics    │   │ 12-step DAG     │
+            │Session cache│   │ Flink→PG    │   │ Airflow trigger │
+            │Bandit wts   │   │ Real-time   │   │ Nightly retrain │
             └─────────────┘   └─────────────┘   └─────────────────┘
                     │                  │
                     └──────────────────┘
