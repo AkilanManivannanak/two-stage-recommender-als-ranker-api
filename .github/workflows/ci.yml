@@ -63,7 +63,7 @@ jobs:
           # Start API in background, wait, curl healthz, then stop
           python -m uvicorn recsys.serving.app:app --host 127.0.0.1 --port 18000 &
           PID=$!
-          sleep 8
+          sleep 20
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18000/healthz)
           kill $PID 2>/dev/null || true
           echo "Health status: $STATUS"
