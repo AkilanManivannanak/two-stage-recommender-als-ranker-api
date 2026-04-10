@@ -380,7 +380,7 @@ export default function VoiceModal({ open, onClose, onItemsFound }: {
 
       // Enrich all 8
       const enriched: MovieResult[] = items.slice(0, 8).map((item: any) => {
-        const cat = catalog[item.item_id] || {}
+        const cat: Record<string, any> = catalog[item.item_id] || {}
         return {
           item_id:       item.item_id,
           title:         cat.title || item.title || `Movie #${item.item_id}`,
