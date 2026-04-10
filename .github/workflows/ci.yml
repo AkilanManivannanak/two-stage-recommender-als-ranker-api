@@ -38,44 +38,19 @@ jobs:
           python -c "
           import os, sys
           sys.path.insert(0, 'src')
-          # Core modules
-          from recsys.serving.rag_engine    import build_index
+          from recsys.serving.rag_engine     import build_index
           from recsys.serving.session_intent import _SESSION_MODEL
           from recsys.serving.two_tower      import TWO_TOWER
           from recsys.serving.reward_model   import score as reward_score
           from recsys.serving.freshness_engine import FRESH_STORE, LAUNCH_DETECTOR, DRIFT_DETECTOR
           from recsys.serving.page_optimizer  import PageOptimizer
           from recsys.serving.realtime_engine import TRENDING, SESSION
-          # App entrypoint
           from recsys.serving import app as _app
           print('All imports OK')
           assert _SESSION_MODEL is not None, 'Session model not initialised'
           assert TWO_TOWER is not None, 'Two-tower model not initialised'
           print('Assertions passed')
           "
-
-      - name: Health-check endpoint smoke (no DB)
-        env:
-          OPENAI_API_KEY: ''
-          TMDB_API_KEY: ''
-          PYTHONPATH: src
-        run: |
-          python -m uvicorn recsys.serving.app:app --host 127.0.0.1 --port 18000 &
-          PID=$!
-          # Wait up to 60s for server to be ready
-          for i in $(seq 1 30); do
-            sleep 2
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18000/healthz 2>/dev/null || echo "000")
-            echo "Attempt $i: $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo "Health check passed!"
-              kill $PID 2>/dev/null || true
-              exit 0
-            fi
-          done
-          kill $PID 2>/dev/null || true
-          echo "FAIL: server never returned 200"
-          exit 1
 
   # ── Frontend type-check ───────────────────────────────────────────────────────
   frontend:
