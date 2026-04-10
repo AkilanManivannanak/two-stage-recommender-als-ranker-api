@@ -60,14 +60,22 @@ jobs:
           TMDB_API_KEY: ''
           PYTHONPATH: src
         run: |
-          # Start API in background, wait, curl healthz, then stop
           python -m uvicorn recsys.serving.app:app --host 127.0.0.1 --port 18000 &
           PID=$!
-          sleep 20
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18000/healthz)
+          # Wait up to 60s for server to be ready
+          for i in $(seq 1 30); do
+            sleep 2
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18000/healthz 2>/dev/null || echo "000")
+            echo "Attempt $i: $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed!"
+              kill $PID 2>/dev/null || true
+              exit 0
+            fi
+          done
           kill $PID 2>/dev/null || true
-          echo "Health status: $STATUS"
-          [ "$STATUS" = "200" ] || (echo "FAIL: expected 200, got $STATUS" && exit 1)
+          echo "FAIL: server never returned 200"
+          exit 1
 
   # ── Frontend type-check ───────────────────────────────────────────────────────
   frontend:
