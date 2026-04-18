@@ -403,6 +403,10 @@ class REINFORCEAgent:
     ) -> dict:
         """
         Warm-start the policy from offline logged data before live serving.
+        This is imitation learning (behavioral cloning) from logged interactions:
+        the REINFORCE agent learns to replicate high-reward orderings observed
+        in historical session data, following an off-policy behavioral cloning
+        objective before online fine-tuning begins.
 
         logged_sessions: list of {user_id, slates: [{items, reward}]}
         user_activities: {user_id: {n_ratings, avg_rating, n_genres}}
