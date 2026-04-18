@@ -8,3 +8,7 @@ frontend/node_modules/
 frontend/.next/
 .DS_Store
 *.v4.bak
+frontend/.next/
+backend/logs/
+backend/artifacts/multimodal_cache.json
+backend/va.py
