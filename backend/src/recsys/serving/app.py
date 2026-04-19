@@ -120,6 +120,17 @@ except Exception as _sle:
     SLICE_EVALUATOR = _SliceFallback()
     RETENTION = _RetentionFallback()
 
+
+try:
+    from recsys.serving.diffusion_poster import DIFFUSION_GENERATOR
+    _DIFFUSION_AVAILABLE = True
+except Exception as _de:
+    _DIFFUSION_AVAILABLE = False
+    class _DiffFallback:
+        def generate(self, **k): return {"error": "diffusion not available"}
+        def forward_diffusion_demo(self, t): return {"error": "diffusion not available"}
+        def noise_schedule_stats(self): return {"error": "diffusion not available"}
+    DIFFUSION_GENERATOR = _DiffFallback()
 # ── ADDITIONS 5,6,7,8,9: Context features, drift, holdback, CUPED, CLIP ──────
 try:
     from recsys.serving.context_and_additions import (
@@ -1552,6 +1563,9 @@ def cold_start_recommend(user_id: int, genres: str = Query(""), k: int = Query(1
         recs = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
         stage = "popularity_fallback"
 
+    if not recs:
+        recs = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
+        stage = "popularity_fallback"
     if not recs:
         recs = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
         stage = "popularity_fallback"
@@ -3549,3 +3563,36 @@ def rl_train_offline(body: _RLOfflineBody):
         result = RL_AGENT.train_offline(sessions, {i: {"n_ratings": 50, "avg_rating": 3.5} for i in range(1001)}, n_epochs=body.n_epochs)
         return {"trained": True, "n_sessions": body.n_sessions, **result}
     except Exception as e: return {"error": str(e)}
+
+# ══ DIFFUSION POSTER GENERATION ══════════════════════════════════════════════
+
+@app.get("/diffusion/status", tags=["diffusion"])
+def diffusion_status():
+    return {
+        "available":    _DIFFUSION_AVAILABLE,
+        "huggingface":  bool(os.environ.get("HUGGINGFACE_API_KEY")),
+        "replicate":    bool(os.environ.get("REPLICATE_API_KEY")),
+        "placeholder":  True,
+        "ddpm_T":       1000,
+        "model":        "Stable Diffusion XL (SDXL)",
+        "reference":    "Ho et al. NeurIPS 2020",
+        "schedule":     "linear beta in [1e-4, 0.02]",
+    }
+
+@app.get("/diffusion/schedule", tags=["diffusion"])
+def diffusion_schedule():
+    """DDPM noise schedule: alpha_bar, SNR across T=1000 timesteps."""
+    return DIFFUSION_GENERATOR.noise_schedule_stats()
+
+@app.get("/diffusion/forward/{t}", tags=["diffusion"])
+def diffusion_forward(t: int):
+    """Forward diffusion demo at timestep t (0-999). Shows signal vs noise level."""
+    if not 0 <= t < 1000:
+        from fastapi import HTTPException
+        raise HTTPException(400, "t must be between 0 and 999")
+    return DIFFUSION_GENERATOR.forward_diffusion_demo(t)
+
+@app.post("/diffusion/generate", tags=["diffusion"])
+def diffusion_generate(title: str, genre: str = "Drama", year: int = None, seed: int = None):
+    """Generate a movie poster using DDPM + Stable Diffusion XL. Falls back to gradient placeholder."""
+    return DIFFUSION_GENERATOR.generate(title=title, genre=genre, year=year, seed=seed)
