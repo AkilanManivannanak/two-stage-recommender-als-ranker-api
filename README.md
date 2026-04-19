@@ -35,6 +35,7 @@
 ![K8s](https://img.shields.io/badge/Kubernetes-HPA%202--10%20replicas-326CE5?style=flat-square&logo=kubernetes)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)
 ![Next.js](https://img.shields.io/badge/Next.js-14-000000?style=flat-square&logo=next.js)
+![Diffusion](https://img.shields.io/badge/Stable%20Diffusion-DDPM%20%2B%20SDXL-FF6B6B?style=flat-square)
 
 </div>
 
@@ -106,6 +107,7 @@ Every number verified from source code.
 | **LinUCB Off-Policy Bandit** | `bandit_v2.py` | 8 genre arms · α=1.0 · UCB exploration |
 | **Reward Model** | `reward_model.py` | IPS-weighted logistic regression · trained on ML-1M |
 | **Multi-Task Reward** | `multi_task_reward.py` | Shared-bottom network · 4 task heads (click, completion, add, skip) · IPS-weighted · pure numpy |
+| **Diffusion Poster Gen** | `diffusion_poster.py` | DDPM noise schedule (Ho et al. 2020) · HuggingFace SDXL API · Replicate SDXL · gradient fallback |
 | **Slate Optimizer** | `slate_optimizer_v2.py` | ≥5 genres · ≤3 same genre · 0.15 explore rate |
 | **Doubly-Robust IPS** | `ope_eval.py` | Off-policy RL evaluation · propensity correction |
 | **Policy Gate** | `policy_gate.py` | 27 automated GateCheck objects |
@@ -544,6 +546,79 @@ class CLIPEmbedder:
 
 ---
 
+## Diffusion Model — Poster Generation (DDPM + Stable Diffusion XL)
+
+When a movie has no TMDB poster, CineWave generates one using a diffusion model. This mirrors Netflix's production use of generative AI for personalised artwork.
+
+### DDPM Noise Schedule (Ho et al. NeurIPS 2020)
+
+Implemented in pure numpy — no GPU or PyTorch required for the math:
+
+```python
+# diffusion_poster.py — DDPMSchedule
+
+T          = 1000            # diffusion timesteps
+β_1        = 1e-4            # initial noise (small)
+β_T        = 0.02            # final noise (large)
+β_t        = linspace(β_1, β_T, T)   # linear schedule
+α_t        = 1 - β_t
+ᾱ_t        = cumprod(α_t)   # ∏α_s from s=1 to t
+
+# Forward process: q(x_t|x_0) — add noise
+x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε,   ε ~ N(0,I)
+
+# Reverse process: p_θ(x_{t-1}|x_t) — denoise
+μ_θ = (1/√α_t)(x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t,t))
+
+# Signal-to-Noise Ratio:
+SNR(t) = ᾱ_t / (1 - ᾱ_t)
+#  t=0:   SNR = 9999  (pure signal)
+#  t=500: SNR = 0.085 (mixed)
+#  t=999: SNR = 0.00004 (pure noise)
+```
+
+### Image Generation Pipeline
+
+```
+Movie title + genre
+        │
+        ▼
+Prompt engineering (genre-specific style suffix)
+"Movie poster for 'Inception', Sci-Fi film,
+ futuristic neon glow, space backdrop, cinematic, 4K"
+        │
+        ├──► HuggingFace SDXL API (free, HUGGINGFACE_API_KEY)
+        │    stabilityai/stable-diffusion-xl-base-1.0
+        │    guidance_scale=7.5 · steps=30 · 512×768 portrait
+        │
+        ├──► Replicate SDXL API (REPLICATE_API_KEY)
+        │    stability-ai/sdxl · same params
+        │
+        └──► Gradient placeholder (always works, no API key)
+             Deterministic from title hash → unique colours per movie
+```
+
+### API Endpoints
+
+| Endpoint | What It Returns |
+|---|---|
+| `GET /diffusion/status` | Which backends are available |
+| `GET /diffusion/schedule` | Full DDPM noise schedule stats (α_bar, SNR at all T) |
+| `GET /diffusion/forward/{t}` | Forward process demo at timestep t |
+| `POST /diffusion/generate?title=X&genre=Y` | Generate poster image |
+
+### Verified Math
+
+```
+signal+noise variance: 1.000000  (unit variance preserved) ✅
+alpha_bar[T=999]:      0.00004   (almost pure noise at end) ✅
+SNR at t=500:          0.0853    (low SNR = high noise) ✅
+posterior variance:    well-defined across all T ✅
+Reference: Ho et al. "Denoising Diffusion Probabilistic Models" NeurIPS 2020
+```
+
+---
+
 ## Apache Spark Feature Engineering
 
 ```
@@ -914,7 +989,18 @@ docker exec recsys_api python3 /app/p.py
 cd frontend && npm install && npm run dev
 ```
 
-**Open:** http://localhost:3000 · http://localhost:3000/ml · http://localhost:8000/docs
+**Open:**
+
+| Page | URL | What It Shows |
+|---|---|---|
+| **Home** | http://localhost:3000 | Personalised feed · 4,961 movies · 8 profile arms |
+| **AI Stack** | http://localhost:3000/aistack | All ML components live — RL, GRU, CLIP, Spark, SQL, HPA, multi-task |
+| **ML Dashboard** | http://localhost:3000/ml | OPE · RL Stack · A/B · Infra · Features · Session/GRU tabs |
+| **A/B Dashboard** | http://localhost:3000/abtest | 4 live experiments with doubly-robust IPS results |
+| **Eval** | http://localhost:3000/eval | Slice NDCG by genre and activity decile |
+| **API Docs** | http://localhost:8000/docs | All 62 endpoints — live and testable |
+| **Health** | http://localhost:8000/healthz | Service status · model version · bundle state |
+| **Airflow** | http://localhost:8080 | Nightly retraining DAG status |
 
 ---
 
@@ -942,6 +1028,7 @@ two-stage-recommender-als-ranker-api/
 │   │   ├── slate_optimizer_v2.py        # ≥5 genres · 0.15 explore · diversity
 │   │   ├── reward_model.py              # IPS-weighted logistic regression · 11 features
 │   │   ├── multi_task_reward.py         # Multi-task learning · shared encoder · 4 task heads · IPS-weighted
+│   │   ├── diffusion_poster.py          # DDPM schedule · HuggingFace SDXL · Replicate · poster generation
 │   │   ├── context_and_additions.py     # CLIP ViT-B/32 foundation model
 │   │   ├── rag_engine.py                # Qdrant · 1,536-dim · HNSW
 │   │   ├── smart_explain.py             # GPT-4o explanations · Redis-cached
@@ -995,7 +1082,7 @@ frontend:
 [![GitHub](https://img.shields.io/badge/GitHub-View%20Repo-181717?style=flat-square&logo=github)](https://github.com/AkilanManivannanak/two-stage-recommender-als-ranker-api)
 [![Demo](https://img.shields.io/badge/Demo-Google%20Drive-E5091A?style=flat-square&logo=google-drive&logoColor=white)](https://drive.google.com/drive/folders/1sXFjx6ShommQ46mFLcTKCyBi0GokRT8v?usp=sharing)
 
-*Python · FastAPI · Apache Spark · PySpark · Scala · LightGBM · Qdrant · Redis · Kafka · Metaflow · Airflow · DuckDB · Next.js 14 · Kubernetes · Docker · GitHub Actions · SQL · CLIP ViT-B/32 · GRU sequence model · offline RL · off-policy RL · doubly-robust IPS · imitation learning · multi-task learning · foundation model*
+*Python · FastAPI · Diffusion Models · DDPM · Stable Diffusion XL · Apache Spark · PySpark · Scala · LightGBM · Qdrant · Redis · Kafka · Metaflow · Airflow · DuckDB · Next.js 14 · Kubernetes · Docker · GitHub Actions · SQL · CLIP ViT-B/32 · GRU sequence model · offline RL · off-policy RL · doubly-robust IPS · imitation learning · multi-task learning · foundation model*
 
 </div>
 
