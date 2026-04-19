@@ -3596,3 +3596,26 @@ def diffusion_forward(t: int):
 def diffusion_generate(title: str, genre: str = "Drama", year: int = None, seed: int = None):
     """Generate a movie poster using DDPM + Stable Diffusion XL. Falls back to gradient placeholder."""
     return DIFFUSION_GENERATOR.generate(title=title, genre=genre, year=year, seed=seed)
+
+@app.get("/diffusion/poster/{item_id}", tags=["diffusion"])
+def diffusion_poster_for_item(item_id: int):
+    """
+    Generate a DALL-E 3 poster for a specific catalog item.
+    Used when TMDB poster is missing.
+    """
+    item = CATALOG.get(item_id)
+    if not item:
+        from fastapi import HTTPException
+        raise HTTPException(404, f"Item {item_id} not found")
+    
+    # Only generate if poster is missing
+    existing = item.get("poster_url", "")
+    if existing and "tmdb" in existing.lower():
+        return {"item_id": item_id, "source": "tmdb", "image_url": existing}
+    
+    result = DIFFUSION_GENERATOR.generate(
+        title=item.get("title", f"Movie {item_id}"),
+        genre=item.get("primary_genre", "Drama"),
+        year=item.get("year"),
+    )
+    return {"item_id": item_id, **result}
