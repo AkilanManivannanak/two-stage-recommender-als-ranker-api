@@ -338,6 +338,48 @@ def generate_via_replicate(prompt: str, seed: Optional[int] = None) -> Optional[
         return None
 
 
+
+
+def generate_via_dalle(prompt: str) -> Optional[str]:
+    """
+    Generate a movie poster using OpenAI DALL-E 3.
+    Returns a URL to the generated image.
+    Requires: OPENAI_API_KEY environment variable.
+    """
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        logger.info("[Diffusion] No OPENAI_API_KEY — skipping DALL-E generation")
+        return None
+
+    try:
+        import urllib.request as _ur, json as _json
+
+        payload = _json.dumps({
+            "model":   "dall-e-3",
+            "prompt":  prompt,
+            "n":       1,
+            "size":    "1024x1024",
+            "quality": "standard",
+        }).encode()
+
+        req = _ur.Request(
+            "https://api.openai.com/v1/images/generations",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type":  "application/json",
+            }
+        )
+        with _ur.urlopen(req, timeout=60) as r:
+            data = _json.loads(r.read())
+            url = data["data"][0]["url"]
+            logger.info(f"[Diffusion] DALL-E 3 generated poster: {url[:60]}...")
+            return url
+
+    except Exception as e:
+        logger.warning(f"[Diffusion] DALL-E generation failed: {e}")
+        return None
+
 # ── Main poster generator ──────────────────────────────────────────────────────
 
 class DiffusionPosterGenerator:
@@ -409,22 +451,29 @@ class DiffusionPosterGenerator:
         source    = "placeholder"
         image_url = None
 
-        # 1. HuggingFace
-        hf_bytes = generate_via_huggingface(prompt, seed=deterministic_seed)
-        if hf_bytes:
-            import base64
-            b64 = base64.b64encode(hf_bytes).decode()
-            image_url = f"data:image/png;base64,{b64}"
-            source    = "huggingface_sdxl"
+        # 1. DALL-E 3 (uses existing OPENAI_API_KEY — highest quality)
+        dalle_url = generate_via_dalle(prompt)
+        if dalle_url:
+            image_url = dalle_url
+            source    = "dalle3"
 
-        # 2. Replicate (if HF failed)
+        # 2. HuggingFace SDXL (if DALL-E failed)
+        if not image_url:
+            hf_bytes = generate_via_huggingface(prompt, seed=deterministic_seed)
+            if hf_bytes:
+                import base64
+                b64 = base64.b64encode(hf_bytes).decode()
+                image_url = f"data:image/png;base64,{b64}"
+                source    = "huggingface_sdxl"
+
+        # 3. Replicate SDXL (if HF failed)
         if not image_url:
             rep_url = generate_via_replicate(prompt, seed=deterministic_seed)
             if rep_url:
                 image_url = rep_url
                 source    = "replicate_sdxl"
 
-        # 3. Gradient placeholder (always works)
+        # 4. Gradient placeholder (always works)
         if not image_url:
             image_url = self._make_placeholder(title, genre, deterministic_seed)
             source    = "placeholder"
