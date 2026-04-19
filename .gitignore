@@ -12,3 +12,6 @@ frontend/.next/
 backend/logs/
 backend/artifacts/multimodal_cache.json
 backend/va.py
+backend/artifacts/multimodal_cache.json
+backend/src/recsys/serving/app.py
+backend/artifacts/multimodal_cache.json
