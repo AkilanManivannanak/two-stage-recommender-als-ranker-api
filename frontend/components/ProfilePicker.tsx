@@ -27,7 +27,6 @@ export default function ProfilePicker() {
 
   const handleSelect = async (user: DemoUser) => {
     setSelecting(user.user_id)
-    await new Promise(r => setTimeout(r, 500))
     dispatch({ type: 'SET_ACTIVE_USER', payload: user })
   }
 
