@@ -91,6 +91,13 @@ export default function Navbar() {
             </Link>
 
             {/* ML Intelligence */}
+            <Link href="/diffusion"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono border border-cine-border hover:border-pink-400/40 text-cine-text-dim hover:text-pink-300 transition-all duration-200"
+              title="Diffusion Model — DDPM + DALL-E 3">
+              <span>🎨</span>
+              <span className="hidden sm:inline">DIFFUSION</span>
+            </Link>
+
             <Link href="/ml"
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono border border-cine-border hover:border-red-400/40 text-cine-text-dim hover:text-red-300 transition-all duration-200"
               title="ML Intelligence Dashboard">
