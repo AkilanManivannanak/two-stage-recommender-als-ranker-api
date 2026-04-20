@@ -524,15 +524,15 @@ Four simultaneous objectives in a single serving pipeline:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Task 1: Collaborative Filtering                              │
-│    → ALS NDCG@10 = 0.1409 (maximize relevance)              │
+│  Task 1: Collaborative Filtering                             │
+│    → ALS NDCG@10 = 0.1409 (maximize relevance)               │
 │                                                              │
-│  Task 2: Slate Diversity                                      │
-│    → ≥5 genres · ≤3 same genre · 0.15 explore rate         │
+│  Task 2: Slate Diversity                                     │
+│    → ≥5 genres · ≤3 same genre · 0.15 explore rate           │
 │                                                              │
-│  Task 3: Bandit Exploration                                   │
+│  Task 3: Bandit Exploration                                  │
 │    → LinUCB UCB: exploit known genres + explore uncertain    │
-│    → 8 genre arms · α=1.0 confidence bound                  │
+│    → 8 genre arms · α=1.0 confidence bound                   │
 │                                                              │
 │  Task 4: Off-Policy RL Reward Maximisation                   │
 │    → REINFORCE Monte Carlo: maximize long-term reward        │
