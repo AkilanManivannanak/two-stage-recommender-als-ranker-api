@@ -158,7 +158,7 @@ export default function DiffusionDemo() {
                 <div style={{ textAlign:'center' as const }}>
                   <div style={{ fontSize:32, marginBottom:12 }}>🎨</div>
                   <div style={{ color:C.muted, fontSize:13 }}>DALL-E 3 generating...</div>
-                  <div style={{ color:C.dim, fontSize:11, marginTop:4 }}>Running DDPM schedule T=1000</div>
+                  <div style={{ color:"#444", fontSize:11, marginTop:4 }}>Running DDPM schedule T=1000</div>
                 </div>
               </div>
             )}
