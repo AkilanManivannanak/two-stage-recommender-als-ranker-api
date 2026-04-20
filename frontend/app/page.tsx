@@ -32,11 +32,14 @@ export default function Page() {
         dispatch({ type: 'SET_API_HEALTH', payload: { healthy: false, bundle: null } })
         dispatch({
           type: 'SET_USERS', payload: [
-            { user_id: 1,   recent_titles: ['Stranger Things', 'Dark', 'Black Mirror'],           recent_item_ids: [1, 6, 12] },
-            { user_id: 7,   recent_titles: ['Peaky Blinders', 'Narcos', 'The Irishman'],          recent_item_ids: [10, 3, 25] },
-            { user_id: 42,  recent_titles: ['Ozark', 'Mindhunter', 'Squid Game'],                 recent_item_ids: [2, 11, 7] },
-            { user_id: 99,  recent_titles: ['Bridgerton', 'Never Have I Ever', 'Sex Education'],  recent_item_ids: [15, 19, 14] },
-            { user_id: 256, recent_titles: ['BoJack Horseman', 'Russian Doll'],                   recent_item_ids: [9, 20] },
+            { user_id: 1,    recent_titles: ['Stranger Things', 'Dark', 'Black Mirror'],           recent_item_ids: [1, 6, 12] },
+            { user_id: 7,    recent_titles: ['Peaky Blinders', 'Narcos', 'The Irishman'],          recent_item_ids: [10, 3, 25] },
+            { user_id: 42,   recent_titles: ['Ozark', 'Mindhunter', 'Squid Game'],                 recent_item_ids: [2, 11, 7] },
+            { user_id: 99,   recent_titles: ['Bridgerton', 'Never Have I Ever', 'Sex Education'],  recent_item_ids: [15, 19, 14] },
+            { user_id: 137,  recent_titles: ['Wednesday', 'The Haunting of Hill House'],           recent_item_ids: [8, 22] },
+            { user_id: 256,  recent_titles: ['BoJack Horseman', 'Russian Doll'],                   recent_item_ids: [9, 20] },
+            { user_id: 512,  recent_titles: ['The Crown', 'Roma', 'Marriage Story'],               recent_item_ids: [4, 26, 27] },
+            { user_id: 1024, recent_titles: ['Extraction', 'Red Notice', 'The Gray Man'],          recent_item_ids: [28, 29, 30] },
           ],
         })
       }

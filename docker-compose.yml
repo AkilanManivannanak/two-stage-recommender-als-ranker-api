@@ -37,6 +37,7 @@ services:
       - "8000:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - TMDB_API_KEY=${TMDB_API_KEY}
       - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
       - REDIS_URL=redis://redis:6379/0
@@ -193,6 +194,7 @@ services:
     restart: "no"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - TMDB_API_KEY=${TMDB_API_KEY}
       - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
       - METAFLOW_DATASTORE_SYSROOT_LOCAL=/app/artifacts
@@ -221,6 +223,7 @@ services:
     restart: "no"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - DATABASE_URL=postgresql://recsys:recsys@postgres:5432/recsys
     volumes:
       - ./backend:/app
@@ -271,6 +274,7 @@ services:
     restart: "no"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
@@ -296,6 +300,7 @@ services:
     restart: "no"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - TMDB_API_KEY=${TMDB_API_KEY}
     volumes:
       - ./backend:/app
@@ -314,6 +319,7 @@ services:
     restart: "no"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
     volumes:
       - ./backend:/app
       - metaflow_data:/app/artifacts
@@ -341,6 +347,7 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
       - TMDB_API_KEY=${TMDB_API_KEY}
       - _AIRFLOW_DB_MIGRATE=true
       - _AIRFLOW_WWW_USER_CREATE=true
