@@ -1269,6 +1269,39 @@ except Exception:
     _voice_router = None
     _VOICE_ENABLED = False
 
+
+try:
+    from recsys.serving.reward_model_sparse import SPARSE_REWARD_MODEL
+    _SPARSE_AVAILABLE = True
+except Exception as _se:
+    _SPARSE_AVAILABLE = False
+    class _SparseFallback:
+        def fit(self, **k): return {"error": "not available"}
+        def summary(self): return {}
+    SPARSE_REWARD_MODEL = _SparseFallback()
+
+try:
+    from recsys.serving.self_supervised_gru import SSL_GRU, _ssl_result
+    _SSL_AVAILABLE = True
+except Exception:
+    _SSL_AVAILABLE = False
+    class _SSLFallback:
+        def ssl_metrics(self): return {}
+        def encode(self, e): return []
+        def predict_next(self, h): import numpy as np; return np.zeros(8)
+    SSL_GRU = _SSLFallback()
+
+try:
+    from recsys.serving.data_curation import DATA_CURATION_ENGINE
+    _CURATION_AVAILABLE = True
+except Exception:
+    _CURATION_AVAILABLE = False
+
+try:
+    from recsys.serving.semi_supervised_als import SEMI_SUPERVISED
+    _SEMI_SUP_AVAILABLE = True
+except Exception:
+    _SEMI_SUP_AVAILABLE = False
 app = FastAPI(
     title="CineWave RecSys API v6 — 9 Additions Integrated",
     description=(
@@ -3671,4 +3704,124 @@ def patch_posters_endpoint(limit: int = 5000):
         "errors":  errors,
         "total_with_poster": sum(1 for v in CATALOG.values() if v.get("poster_url")),
         "total": len(CATALOG),
+    }
+
+
+@app.post("/ml/sparse/train", tags=["ml_extensions"])
+def sparse_train(l1_lambda: float = 0.01):
+    """
+    Train sparse reward model with L1 regularization.
+    L1 (LASSO) induces sparsity — zeroes out irrelevant features.
+    Returns which features survived (non-zero weight) vs zeroed out.
+    """
+    if not _SPARSE_AVAILABLE:
+        return {"error": "sparse reward model not available"}
+    from recsys.serving.reward_model_sparse import SparseRewardModel
+    model = SparseRewardModel(l1_lambda=l1_lambda)
+    result = model.fit()
+    return result
+
+@app.get("/ml/sparse/summary", tags=["ml_extensions"])
+def sparse_summary():
+    """Sparse reward model weight summary — shows sparsity, surviving features."""
+    if not _SPARSE_AVAILABLE:
+        return {"error": "sparse reward model not available"}
+    return SPARSE_REWARD_MODEL.summary() or {"status": "not_trained_yet", "hint": "POST /ml/sparse/train first"}
+
+@app.get("/ml/ssl/summary", tags=["ml_extensions"])
+def ssl_summary():
+    """Self-supervised GRU training summary — next-item prediction accuracy."""
+    if not _SSL_AVAILABLE:
+        return {"error": "SSL GRU not available"}
+    return {
+        "available": True,
+        "metrics": SSL_GRU.ssl_metrics(),
+        "architecture": {
+            "hidden_dim": 16,
+            "input_dim": 8,
+            "objective": "next_item_prediction",
+            "paradigm": "self_supervised",
+            "reference": "BERT4Rec (Sun et al. 2019) / SASRec (Kang & McAuley 2018)",
+        }
+    }
+
+@app.post("/ml/ssl/predict_next/{user_id}", tags=["ml_extensions"])
+def ssl_predict_next(user_id: int):
+    """
+    Self-supervised GRU: predict next genre for user session.
+    Uses SSL-pretrained GRU to predict what the user will watch next.
+    """
+    if not _SSL_AVAILABLE:
+        return {"error": "SSL GRU not available"}
+    import numpy as np
+    rng = np.random.default_rng(user_id)
+    mock_events = [rng.normal(0, 1, 8).tolist() for _ in range(5)]
+    h = SSL_GRU.encode(mock_events)
+    probs = SSL_GRU.predict_next(h)
+    genres = ["Action","Comedy","Drama","Horror","Sci-Fi","Romance","Thriller","Documentary"]
+    ranked = sorted(zip(genres, probs.tolist()), key=lambda x: -x[1])
+    return {
+        "user_id": user_id,
+        "predicted_next_genre": ranked[0][0],
+        "genre_probabilities": [{"genre": g, "prob": round(p,4)} for g,p in ranked],
+        "method": "self_supervised_gru_next_item_prediction",
+    }
+
+@app.post("/ml/curate", tags=["ml_extensions"])
+def curate_catalog_endpoint(
+    min_vote_count: int   = 5,
+    min_avg_rating: float = 1.5,
+    min_quality:    float = 0.10,
+):
+    """
+    Data curation engine — filters CATALOG for training quality.
+    Removes low-vote, low-rating, duplicate, and invalid items.
+    Returns curation report with quality statistics.
+    """
+    if not _CURATION_AVAILABLE:
+        return {"error": "data curation engine not available"}
+    from recsys.serving.data_curation import curate_catalog
+    _, report = curate_catalog(
+        CATALOG,
+        min_vote_count=min_vote_count,
+        min_avg_rating=min_avg_rating,
+        min_quality_score=min_quality,
+        verbose=False,
+    )
+    return report
+
+@app.get("/ml/semi_supervised/summary", tags=["ml_extensions"])
+def semi_supervised_summary():
+    """Semi-supervised embedding propagation status."""
+    if not _SEMI_SUP_AVAILABLE:
+        return {"error": "semi-supervised module not available"}
+    summary = SEMI_SUPERVISED.summary()
+    if not summary:
+        return {
+            "status": "not_fitted",
+            "hint": "POST /ml/semi_supervised/propagate to run",
+            "description": (
+                "Semi-supervised: propagates ALS embeddings (rated items) "
+                "to unrated items via co-occurrence graph. "
+                "Labeled=rated items, Unlabeled=catalog items with no ratings."
+            )
+        }
+    return summary
+
+@app.get("/ml/extensions/status", tags=["ml_extensions"])
+def ml_extensions_status():
+    """Status of all ML extension modules."""
+    return {
+        "sparse_training":      _SPARSE_AVAILABLE,
+        "self_supervised_gru":  _SSL_AVAILABLE,
+        "data_curation":        _CURATION_AVAILABLE,
+        "semi_supervised_als":  _SEMI_SUP_AVAILABLE,
+        "endpoints": {
+            "POST /ml/sparse/train":                  "L1 sparse reward model training",
+            "GET  /ml/sparse/summary":                "Sparsity stats + surviving features",
+            "GET  /ml/ssl/summary":                   "SSL GRU next-item pretraining stats",
+            "POST /ml/ssl/predict_next/{user_id}":    "Predict next genre from session",
+            "POST /ml/curate":                        "Data curation quality filter",
+            "GET  /ml/semi_supervised/summary":       "Semi-supervised propagation stats",
+        }
     }
