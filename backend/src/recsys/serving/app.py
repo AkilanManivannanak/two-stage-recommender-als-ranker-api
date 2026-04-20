@@ -704,6 +704,23 @@ def _dedup_record(uid: int, items: list) -> None:
 
 _init_retrieval_engine(CATALOG)
 
+# ── Load persisted poster patches ─────────────────────────────────────────────
+try:
+    import json as _pj
+    _patch_file = Path(os.environ.get("BUNDLE_REF", "artifacts/bundle")).parent / "poster_patch.json"
+    if _patch_file.exists():
+        _poster_patches = _pj.loads(_patch_file.read_text())
+        _patched = 0
+        for _pid_str, _purl in _poster_patches.items():
+            _pid = int(_pid_str)
+            if _pid in CATALOG:
+                CATALOG[_pid]["poster_url"] = _purl
+                _patched += 1
+        print(f"  [Catalog] Loaded {_patched} poster patches from {_patch_file}")
+except Exception as _pe:
+    print(f"  [Catalog] Poster patch load skipped: {_pe}")
+
+
 # ── Layer 4+5: SlateOptimizer singleton ───────────────────────────────────────
 _SLATE_OPT_V2 = _SlateOptimizerV2()
 
@@ -3044,7 +3061,8 @@ def clip_similar(item_id: int, top_k: int = Query(10, ge=1, le=50)):
 
 @app.get("/catalog/popular")
 def catalog_popular(k: int = 1200):
-    return {"items": get_tmdb_catalog(k)}
+    items = sorted(CATALOG.values(), key=lambda x: -x.get("popularity", 0))[:k]
+    return {"items": list(items)}
 
 @app.get("/item/{item_id}")
 def get_item(item_id: int, user_id: int = Query(default=1)):
@@ -3619,3 +3637,38 @@ def diffusion_poster_for_item(item_id: int):
         year=item.get("year"),
     )
     return {"item_id": item_id, **result}
+
+@app.post("/admin/patch-posters", tags=["admin"])
+def patch_posters_endpoint(limit: int = 5000):
+    """Patch TMDB poster URLs directly into the running server CATALOG."""
+    import time, urllib.request, json as _json, urllib.parse
+    tmdb_key = os.environ.get("TMDB_API_KEY", "")
+    if not tmdb_key:
+        return {"error": "No TMDB_API_KEY"}
+    fixed = 0
+    skipped = 0
+    errors = 0
+    items_to_patch = [(k, v) for k, v in CATALOG.items() if not v.get("poster_url")][:limit]
+    for item_id, item in items_to_patch:
+        title = item.get("title", "")
+        year  = str(item.get("year", ""))
+        try:
+            query = urllib.parse.quote(title)
+            url   = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={query}&year={year}"
+            with urllib.request.urlopen(url, timeout=5) as r:
+                results = _json.loads(r.read()).get("results", [])
+            if results and results[0].get("poster_path"):
+                CATALOG[item_id]["poster_url"] = f"https://image.tmdb.org/t/p/w500{results[0]['poster_path']}"
+                fixed += 1
+            else:
+                skipped += 1
+            time.sleep(0.04)
+        except Exception as e:
+            errors += 1
+    return {
+        "fixed":   fixed,
+        "skipped": skipped,
+        "errors":  errors,
+        "total_with_poster": sum(1 for v in CATALOG.values() if v.get("poster_url")),
+        "total": len(CATALOG),
+    }
