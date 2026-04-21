@@ -32,9 +32,8 @@ jobs:
       - name: Run unit tests
         env:
           OPENAI_API_KEY: ''
-        run: |
-          cd backend
-          python3 -m pytest tests/test_core.py -v --tb=short
+          PYTHONPATH: src
+        run: python3 -m pytest tests/test_core.py -v --tb=short
 
       - name: Import smoke — serving app
         env:
