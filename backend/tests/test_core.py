@@ -4,7 +4,9 @@ Run: pytest backend/tests/ -v
 """
 import numpy as np
 import sys
-sys.path.insert(0, 'backend/src')
+import os
+# Add src to path regardless of where pytest is run from
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_gru_cell_shapes():
     from recsys.serving.session_intent import GRUCell
@@ -35,16 +37,15 @@ def test_ddpm_schedule():
     assert abs(signal**2 + noise**2 - 1.0) < 1e-5, "Variance not preserved"
 
 def test_reward_model_score():
-    from recsys.serving.reward_model import score, build_features
-    feat = build_features(
+    from recsys.serving.reward_model import score
+    s = score(
         genre="Action",
         user_genre_ratings={"Action": [4.0, 4.5]},
         user_genres={"Action"},
-        item={"avg_rating": 4.2, "year": 2020, "vote_count": 100},
+        item={"avg_rating": 4.2, "year": 2020, "vote_count": 100, "primary_genre": "Action"},
         session_momentum=0.7,
         days_since_genre=7.0,
     )
-    s = score(feat)
     assert 0.0 <= s <= 1.0, f"Score {s} not in [0,1]"
 
 def test_sparse_training_sparsity():
