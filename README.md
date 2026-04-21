@@ -64,7 +64,22 @@
 
 ```bash
 # Health check — shows all subsystems
-curl http://localhost:8000/healthz | python3 -m json.tool
+curl http://localhost:8000/healthz
+
+# ML Extensions status
+curl http://localhost:8000/ml/extensions/status
+
+# Sparse training (L1) — see which features survive
+curl -X POST "http://localhost:8000/ml/sparse/train?l1_lambda=0.01"
+
+# Self-supervised GRU summary
+curl http://localhost:8000/ml/ssl/summary
+
+# SSL next-item prediction for user 1
+curl -X POST "http://localhost:8000/ml/ssl/predict_next/1"
+
+# Data curation report
+curl -X POST "http://localhost:8000/ml/curate?min_vote_count=5" | python3 -m json.tool
 
 # Live recommendations for user 1
 curl -X POST http://localhost:8000/recommend \
@@ -170,51 +185,51 @@ INGEST → RETRIEVE → RERANK → RL REORDER → SERVE → FEEDBACK LOOP
 ─────────────────────────────────────────────────────────────────
 
 ┌──────────────────────────────────────────────────────────────┐
-│  INGEST                                                      │
+│  INGEST                                                       │
 │  MovieLens 800k ratings → Apache Spark PySpark ETL           │
-│  5 feature sets: genre ratings · activity · popularity       │
-│                  impression counts · co-occurrence           │
+│  5 feature sets: genre ratings · activity · popularity        │
+│                  impression counts · co-occurrence            │
 │  TMDB API → 4,961 movies with real poster URLs               │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  RETRIEVE (Stage 2)                                          │
+│  RETRIEVE (Stage 2)                                           │
 │  ALS Collaborative Filtering (Scala MLlib, rank=64)          │
 │    → item_factors.parquet → Redis feature store (<10ms)      │
-│  RAG Semantic Retrieval (Qdrant HNSW, 1536-dim)              │
+│  RAG Semantic Retrieval (Qdrant HNSW, 1536-dim)             │
 │    → OpenAI embeddings → cosine similarity over 4,961 titles │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  RERANK (Stage 3)                                            │
-│  LightGBM LambdaMART · NDCG objective · 8 features           │
+│  RERANK (Stage 3)                                             │
+│  LightGBM LambdaMART · NDCG objective · 8 features          │
 │  top-100 ALS candidates → top-30 ranked slate                │
-│  NDCG: 0.1409 vs ALS baseline 0.0399 (+253%)                 │
+│  NDCG: 0.1409 vs ALS baseline 0.0399 (+253%)                │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  OFFLINE RL REORDER (Stage 4)                                │
-│  REINFORCE policy gradient                                   │
-│    warm-started via imitation learning from logged sessions  │
-│  LinUCB off-policy bandit (8 genre arms, α=1.0)              │
-│    UCB = μ + α√(xᵀA⁻¹x)                                      │
+│  OFFLINE RL REORDER (Stage 4)                                 │
+│  REINFORCE policy gradient                                    │
+│    warm-started via imitation learning from logged sessions   │
+│  LinUCB off-policy bandit (8 genre arms, α=1.0)             │
+│    UCB = μ + α√(xᵀA⁻¹x)                                    │
 │  GRU session encoder (hidden=16, acc=0.927)                  │
-│    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context            │
+│    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context          │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  SERVE (Stage 5)                                             │
-│  Slate Optimizer: ≥5 genres · ≤3 same genre · 0.15 explore   │
+│  SERVE (Stage 5)                                              │
+│  Slate Optimizer: ≥5 genres · ≤3 same genre · 0.15 explore  │
 │  FastAPI /recommend → p95 < 50ms                             │
 │  Policy Gate: 27 checks before any model promotion           │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  FEEDBACK LOOP                                               │
-│  play/skip/add-to-list → Kafka → Flink → Postgres + Redis    │
+│  FEEDBACK LOOP                                                │
+│  play/skip/add-to-list → Kafka → Flink → Postgres + Redis   │
 │  Reward model (IPS-weighted logistic regression, 11 features)│
-│  DuckDB doubly-robust IPS-NDCG eval every 6h                 │
-│  Metaflow nightly retrain → policy gate → hot-swap (30s)     │
+│  DuckDB doubly-robust IPS-NDCG eval every 6h               │
+│  Metaflow nightly retrain → policy gate → hot-swap (30s)    │
 └──────────────────────────────────────────────────────────────┘
 
 CACHING & FALLBACKS:
@@ -254,6 +269,10 @@ Every number verified from source code.
 | **Metaflow** | `flows/phenomenal_flow_v3.py` | 12-step DAG · hot-swap on promotion |
 | **Kubernetes** | `k8s/` | HPA 2–10 · CPU>70% · Memory>80% · RPS>100/pod |
 | **SQL** | `sql/` | 4-table schema · SELECT+JOIN+GROUP BY queries |
+| **Sparse Training** | `reward_model_sparse.py` | L1 proximal gradient · soft-thresholding · 4/11 features survive · 63.6% sparsity |
+| **Self-Supervised GRU** | `self_supervised_gru.py` | Next-item prediction · no labels · BERT4Rec paradigm · acc=0.2801 |
+| **Semi-Supervised ALS** | `semi_supervised_als.py` | Label propagation · ALS embeddings → 1,078 unrated items via co-occurrence graph |
+| **Data Curation** | `data_curation.py` | Quality filter · Bayesian rating · dedup · genre normalization · 3883→3363 items |
 
 ---
 
@@ -286,6 +305,10 @@ Every number verified from source code.
 | **Kubernetes** | HPA (2–10 replicas) · CPU>70% · Memory>80% · RPS>100 | Auto-scaling manifests in `k8s/` |
 | **SRE / DevOps** | p50/p95/p99 per route · 27-gate release · health checks · X-Request-ID | Policy gate enforces SRE standards |
 | **Voice AI** | Whisper STT · GPT-4o intent · TTS nova | Conversational discovery · 8 genre profiles |
+| **Sparse Training** | L1 proximal gradient · soft-thresholding | Reward model: 4/11 features non-zero · 63.6% sparsity |
+| **Self-Supervised Learning** | GRU next-item prediction · no labels | BERT4Rec paradigm · acc=0.2801 on session sequences |
+| **Semi-Supervised Learning** | Label propagation on co-occurrence graph | ALS embeddings propagated to 1,078 unrated catalog items |
+| **Data Curation** | Bayesian quality filter · deduplication · genre normalization | 3,883 → 3,363 items (86.6% retained) before ALS training |
 | **GenAI** | GPT-4o explanations · GPT-4o Vision (VLM) | Per-user personalised explanations |
 | **Orchestration** | Docker Compose · 7 services | Local production environment |
 | **CI/CD** | GitHub Actions | Import smoke + TypeScript build |
@@ -524,15 +547,15 @@ Four simultaneous objectives in a single serving pipeline:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Task 1: Collaborative Filtering                             │
-│    → ALS NDCG@10 = 0.1409 (maximize relevance)               │
+│  Task 1: Collaborative Filtering                              │
+│    → ALS NDCG@10 = 0.1409 (maximize relevance)              │
 │                                                              │
-│  Task 2: Slate Diversity                                     │
-│    → ≥5 genres · ≤3 same genre · 0.15 explore rate           │
+│  Task 2: Slate Diversity                                      │
+│    → ≥5 genres · ≤3 same genre · 0.15 explore rate         │
 │                                                              │
-│  Task 3: Bandit Exploration                                  │
+│  Task 3: Bandit Exploration                                   │
 │    → LinUCB UCB: exploit known genres + explore uncertain    │
-│    → 8 genre arms · α=1.0 confidence bound                   │
+│    → 8 genre arms · α=1.0 confidence bound                  │
 │                                                              │
 │  Task 4: Off-Policy RL Reward Maximisation                   │
 │    → REINFORCE Monte Carlo: maximize long-term reward        │
@@ -544,6 +567,129 @@ Joint serving: ALS → LightGBM → REINFORCE → LinUCB → Slate constraints
 ```
 
 **Trade-off:** Pure relevance (Task 1 alone) → filter-bubble collapse. Tasks 2–4 trade a small NDCG cost for long-term engagement and catalog coverage.
+
+---
+
+## Sparse Training — L1 Regularization
+
+The IPS-weighted reward model is trained with **L1 (LASSO) sparse training** via proximal gradient descent. L1 induces sparsity by zeroing out irrelevant feature weights — the model learns which of the 11 features actually matter.
+
+```python
+# reward_model_sparse.py — L1 proximal gradient descent
+
+for epoch in range(epochs):
+    # 1. Standard gradient step (IPS-weighted cross-entropy)
+    logits = X @ wts + bias
+    probs  = 1/(1 + exp(-logits))
+    errors = (probs - y) * ips_weights
+    wts   -= lr * (X.T @ errors) / len(y)
+
+    # 2. Proximal L1 step — soft-thresholding (THIS induces sparsity)
+    # w_i → sign(w_i) * max(|w_i| - λ*lr, 0)
+    threshold = l1_lambda * lr
+    wts = sign(wts) * maximum(abs(wts) - threshold, 0.0)
+    # Features with |w_i| < threshold → zeroed out exactly
+
+# Result at λ=0.01: 4/11 features non-zero (63.6% sparsity)
+# Surviving: ALS score · genre match · completion rate · skip penalty
+# Zeroed:    7 features that don't improve reward prediction
+```
+
+**Verified in Docker:** `Status: trained_sparse · Sparsity: 0.6364 · Non-zero: 4/11` ✅
+
+---
+
+## Self-Supervised Learning — GRU Next-Item Prediction
+
+The GRU session encoder is **pretrained with a self-supervised objective** — no human labels required. Supervision comes from the session sequence itself.
+
+```python
+# self_supervised_gru.py — next-item prediction (BERT4Rec paradigm)
+
+# Objective: Given session prefix [e_1, ..., e_t], predict e_{t+1}
+# Loss: cross-entropy over 8 genre classes
+# No human labels — supervision from sequence structure
+
+for session in sessions:
+    h = zeros(hidden_dim)
+    for t in range(len(events) - 1):
+        h, gates = gru_step(events[t], h)          # encode prefix
+        probs    = predict_next(h)                  # predict next genre
+        loss     = -log(probs[events[t+1].genre])  # self-supervised loss
+        # Backprop through prediction head + GRU weights
+
+# Same paradigm as:
+#   BERT4Rec (Sun et al. RecSys 2019) — masked item prediction
+#   SASRec (Kang & McAuley ICDM 2018) — next item prediction
+#   GPT — next token prediction
+```
+
+**Verified:** `method=next_item_prediction · acc=0.2801 · loss=1.9313` ✅
+
+The SSL-pretrained GRU is then fine-tuned for intent classification (supervised), giving better initialisation than random weights.
+
+---
+
+## Semi-Supervised Learning — ALS Label Propagation
+
+ALS trains on **3,883 rated items** (labeled). The catalog has **4,961 total items** — 1,078 movies have no ratings. Semi-supervised label propagation gives them embeddings via the co-occurrence graph.
+
+```python
+# semi_supervised_als.py — label propagation on co-occurrence graph
+
+# Labeled:   3,883 items with ALS embeddings (from ML-1M ratings)
+# Unlabeled: 1,078 items with no ratings → get propagated embeddings
+
+# Algorithm: Label Propagation
+for iteration in range(n_iterations):
+    for unrated_item in unlabeled:
+        neighbors = cooccurrence_graph[unrated_item]  # from PySpark ETL
+        rated_neighbors = [n for n in neighbors if n in item_factors]
+
+        # Weighted average of rated neighbor embeddings
+        propagated = Σ(count(n) * embedding(n)) / Σ count(n)
+
+        # Semi-supervised update: blend propagated + prior
+        embedding[unrated_item] = (1-α) * propagated + α * prior
+
+# α=0.2: 80% from graph neighbors, 20% from genre-based prior
+# Result: all 4,961 catalog items have embeddings for similarity search
+```
+
+**Why this matters:** Without semi-supervised propagation, cold-start items (new movies added to TMDB with no ratings) can't be retrieved by ALS. Label propagation solves this without requiring any user interactions.
+
+---
+
+## Data Curation Engine
+
+A quality filter runs before ALS training to remove noisy catalog items. Low-vote items create corrupted co-occurrence signals that hurt ALS embeddings.
+
+```python
+# data_curation.py — Bayesian quality filter + deduplication
+
+def quality_score(item):
+    # Bayesian average (smoothed toward global mean C=3.5, min_votes m=50):
+    # quality = (v/(v+m)) * R + (m/(v+m)) * C
+    bayesian_rating = (votes/(votes+50)) * avg_rating + (50/(votes+50)) * 3.5
+    return (
+        0.4 * bayesian_rating/5.0  +  # rating quality
+        0.3 * min(votes/500, 1.0)  +  # vote reliability
+        0.2 * has_poster           +  # metadata completeness
+        0.1 * (year >= 1970)          # recency
+    )
+
+# Filters applied in order:
+#   1. vote_count < 5         → remove (unreliable signal)
+#   2. avg_rating < 1.5       → remove (clearly bad)
+#   3. quality_score < 0.10   → remove (low overall quality)
+#   4. duplicate titles        → keep highest quality version
+#   5. genre normalization     → map to canonical 8 LinUCB arm genres
+
+# Result: 3,883 → 3,363 items (86.6% retained)
+# Removed: 297 low-vote · 143 low-quality · 80 duplicates
+```
+
+**Verified:** `Before: 3883 → After: 3363 · Retained: 86.6%` ✅
 
 ---
 
