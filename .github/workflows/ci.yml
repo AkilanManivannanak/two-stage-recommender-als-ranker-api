@@ -29,6 +29,13 @@ jobs:
       - name: Compile check (syntax errors)
         run: python -m compileall src -q
 
+      - name: Run unit tests
+        env:
+          OPENAI_API_KEY: ''
+        run: |
+          cd backend
+          python3 -m pytest tests/test_core.py -v --tb=short
+
       - name: Import smoke — serving app
         env:
           OPENAI_API_KEY: ''
