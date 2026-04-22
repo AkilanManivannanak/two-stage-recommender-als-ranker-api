@@ -106,6 +106,12 @@ curl http://localhost:8000/ab/experiments
 
 # GRU session intent for user 1
 curl http://localhost:8000/session/intent/1
+
+# Two-tower neural retrieval for user 1
+curl http://localhost:8000/recommend/two_tower/1
+
+# ML extensions status (sparse, SSL, semi-sup, curation)
+curl http://localhost:8000/ml/extensions/status
 ```
 
 ---
@@ -263,6 +269,7 @@ Every number verified from source code.
 | **Slate Optimizer** | `slate_optimizer_v2.py` | ≥5 genres · ≤3 same genre · 0.15 explore rate |
 | **Doubly-Robust IPS** | `ope_eval.py` | Off-policy RL evaluation · propensity correction · DR(π) formula |
 | **Policy Gate** | `policy_gate.py` | 27 automated GateCheck objects |
+| **Two-Tower Model** | `two_tower_model.py` | Neural retrieval · numpy · fallback to ALS item factors |
 | **CLIP Foundation Model** | `context_and_additions.py` | ViT-B/32 · 512-dim · graceful colour-histogram fallback |
 | **RAG Engine** | `rag_engine.py` | Qdrant HNSW · 1,536-dim · OpenAI embeddings |
 | **A/B Framework** | `ab_experiment.py` | 4 experiments · doubly-robust IPS |
@@ -1104,6 +1111,8 @@ two-stage-recommender-als-ranker-api/
 │   ├── scala/FeaturePipeline.scala      # Native Spark ALS · rank=64
 │   ├── airflow/dags/                    # Nightly retraining DAGs
 │   ├── infra/duckdb/run_offline_eval.py # IPS-NDCG evaluation
+│   ├── tests/
+│   │   └── test_core.py                 # 7 unit tests · GRU · DDPM · LinUCB · sparse · SSL · curation
 │   └── requirements.txt
 ├── frontend/
 │   ├── app/
@@ -1130,6 +1139,40 @@ two-stage-recommender-als-ranker-api/
 
 ---
 
+## Unit Tests
+
+**7 unit tests — all passing** (`pytest tests/test_core.py -v` → `7 passed in 16.84s`)
+
+| Test | What It Verifies |
+|---|---|
+| `test_gru_cell_shapes` | GRU cell output shape (16,) · update/reset/candidate gates |
+| `test_linucb_ucb_score` | LinUCB UCB = exploit + explore · float · positive |
+| `test_ddpm_schedule` | DDPM variance preservation: signal² + noise² = 1.000 ✅ |
+| `test_reward_model_score` | IPS-weighted logistic score ∈ [0,1] |
+| `test_sparse_training_sparsity` | L1 proximal gradient zeroes at least 1 weight |
+| `test_ssl_gru_predicts` | SSL GRU next-item probs sum to 1.0 over 8 genres |
+| `test_data_curation_filters` | Low-vote + duplicate items correctly removed |
+
+```bash
+# Run locally
+cd backend
+python3 -m pytest tests/test_core.py -v
+
+# Expected output:
+# test_gru_cell_shapes         PASSED
+# test_linucb_ucb_score        PASSED
+# test_ddpm_schedule           PASSED
+# test_reward_model_score      PASSED
+# test_sparse_training_sparsity PASSED
+# test_ssl_gru_predicts        PASSED
+# test_data_curation_filters   PASSED
+# 7 passed in 16.84s
+```
+
+Tests run automatically on every push via GitHub Actions CI.
+
+---
+
 ## CI/CD
 
 ```yaml
@@ -1138,8 +1181,9 @@ two-stage-recommender-als-ranker-api/
 
 backend:
   - actions/setup-python@v5 (Python 3.11 · pip cache)
-  - pip install -r requirements.txt
+  - pip install -r requirements.txt pytest
   - python -m compileall src -q            # syntax check all 40+ modules
+  - pytest tests/test_core.py -v           # 7 unit tests (all passing)
   - import smoke (OPENAI_API_KEY=''):
       from recsys.serving.session_intent import _SESSION_MODEL   # GRU
       from recsys.serving.two_tower import TWO_TOWER
