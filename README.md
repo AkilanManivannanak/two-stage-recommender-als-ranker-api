@@ -185,51 +185,51 @@ INGEST → RETRIEVE → RERANK → RL REORDER → SERVE → FEEDBACK LOOP
 ─────────────────────────────────────────────────────────────────
 
 ┌──────────────────────────────────────────────────────────────┐
-│  INGEST                                                       │
+│  INGEST                                                      │
 │  MovieLens 800k ratings → Apache Spark PySpark ETL           │
-│  5 feature sets: genre ratings · activity · popularity        │
-│                  impression counts · co-occurrence            │
+│  5 feature sets: genre ratings · activity · popularity       │
+│                  impression counts · co-occurrence           │
 │  TMDB API → 4,961 movies with real poster URLs               │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  RETRIEVE (Stage 2)                                           │
+│  RETRIEVE (Stage 2)                                          │
 │  ALS Collaborative Filtering (Scala MLlib, rank=64)          │
 │    → item_factors.parquet → Redis feature store (<10ms)      │
-│  RAG Semantic Retrieval (Qdrant HNSW, 1536-dim)             │
+│  RAG Semantic Retrieval (Qdrant HNSW, 1536-dim)              │
 │    → OpenAI embeddings → cosine similarity over 4,961 titles │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  RERANK (Stage 3)                                             │
-│  LightGBM LambdaMART · NDCG objective · 8 features          │
+│  RERANK (Stage 3)                                            │
+│  LightGBM LambdaMART · NDCG objective · 8 features           │
 │  top-100 ALS candidates → top-30 ranked slate                │
-│  NDCG: 0.1409 vs ALS baseline 0.0399 (+253%)                │
+│  NDCG: 0.1409 vs ALS baseline 0.0399 (+253%)                 │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  OFFLINE RL REORDER (Stage 4)                                 │
-│  REINFORCE policy gradient                                    │
-│    warm-started via imitation learning from logged sessions   │
-│  LinUCB off-policy bandit (8 genre arms, α=1.0)             │
-│    UCB = μ + α√(xᵀA⁻¹x)                                    │
+│  OFFLINE RL REORDER (Stage 4)                                │
+│  REINFORCE policy gradient                                   │
+│    warm-started via imitation learning from logged sessions  │
+│  LinUCB off-policy bandit (8 genre arms, α=1.0)              │
+│    UCB = μ + α√(xᵀA⁻¹x)                                      │
 │  GRU session encoder (hidden=16, acc=0.927)                  │
-│    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context          │
+│    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context            │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  SERVE (Stage 5)                                              │
-│  Slate Optimizer: ≥5 genres · ≤3 same genre · 0.15 explore  │
+│  SERVE (Stage 5)                                             │
+│  Slate Optimizer: ≥5 genres · ≤3 same genre · 0.15 explore   │
 │  FastAPI /recommend → p95 < 50ms                             │
 │  Policy Gate: 27 checks before any model promotion           │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
-│  FEEDBACK LOOP                                                │
-│  play/skip/add-to-list → Kafka → Flink → Postgres + Redis   │
+│  FEEDBACK LOOP                                               │
+│  play/skip/add-to-list → Kafka → Flink → Postgres + Redis    │
 │  Reward model (IPS-weighted logistic regression, 11 features)│
-│  DuckDB doubly-robust IPS-NDCG eval every 6h               │
-│  Metaflow nightly retrain → policy gate → hot-swap (30s)    │
+│  DuckDB doubly-robust IPS-NDCG eval every 6h                 │
+│  Metaflow nightly retrain → policy gate → hot-swap (30s)     │
 └──────────────────────────────────────────────────────────────┘
 
 CACHING & FALLBACKS:
@@ -547,15 +547,15 @@ Four simultaneous objectives in a single serving pipeline:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Task 1: Collaborative Filtering                              │
-│    → ALS NDCG@10 = 0.1409 (maximize relevance)              │
+│  Task 1: Collaborative Filtering                             │
+│    → ALS NDCG@10 = 0.1409 (maximize relevance)               │
 │                                                              │
-│  Task 2: Slate Diversity                                      │
-│    → ≥5 genres · ≤3 same genre · 0.15 explore rate         │
+│  Task 2: Slate Diversity                                     │
+│    → ≥5 genres · ≤3 same genre · 0.15 explore rate           │
 │                                                              │
-│  Task 3: Bandit Exploration                                   │
+│  Task 3: Bandit Exploration                                  │
 │    → LinUCB UCB: exploit known genres + explore uncertain    │
-│    → 8 genre arms · α=1.0 confidence bound                  │
+│    → 8 genre arms · α=1.0 confidence bound                   │
 │                                                              │
 │  Task 4: Off-Policy RL Reward Maximisation                   │
 │    → REINFORCE Monte Carlo: maximize long-term reward        │
