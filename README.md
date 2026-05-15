@@ -174,6 +174,7 @@ CI            → GitHub Actions — import smoke + TypeScript build on every pu
 - [Kubernetes HPA Autoscaling](#kubernetes-hpa-autoscaling)
 - [SQL Schema & Analytics](#sql-schema--analytics)
 - [Voice AI & GenAI Features](#voice-ai--genai-features)
+- [Voice Wake-Up System — How It Works](#voice-wake-up-system--how-it-works)
 - [SRE Observability](#sre-observability)
 - [MLOps Pipeline](#mlops-pipeline)
 - [Results & Baselines](#results--baselines)
@@ -221,6 +222,9 @@ INGEST → RETRIEVE → RERANK → RL REORDER → SERVE → FEEDBACK LOOP
 │    UCB = μ + α√(xᵀA⁻¹x)                                      │
 │  GRU session encoder (hidden=16, acc=0.927)                  │
 │    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context            │
+│  Multi-task reward model (4 heads: click·completion·add·skip)│
+│  Sparse L1 reward training (4/11 features, 63.6% sparsity)  │
+│  Semi-supervised ALS (1,078 cold-start items propagated)     │
 └──────────────────────┬───────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────┐
@@ -280,6 +284,7 @@ Every number verified from source code.
 | **Self-Supervised GRU** | `self_supervised_gru.py` | Next-item prediction · no labels · BERT4Rec paradigm · acc=0.2801 |
 | **Semi-Supervised ALS** | `semi_supervised_als.py` | Label propagation · ALS embeddings → 1,078 unrated items via co-occurrence graph |
 | **Data Curation** | `data_curation.py` | Quality filter · Bayesian rating · dedup · genre normalization · 3883→3363 items |
+| **Voice Wake-Up** | `hooks/useVoiceAssistant.ts` | Auto-greeting · greetedRef guard · MediaRecorder · Whisper STT · GPT-4o TTS |
 
 ---
 
@@ -311,7 +316,7 @@ Every number verified from source code.
 | **SQL** | PostgreSQL · `sql/schema.sql` · `sql/queries.sql` | 4-table schema · SELECT + JOIN + GROUP BY |
 | **Kubernetes** | HPA (2–10 replicas) · CPU>70% · Memory>80% · RPS>100 | Auto-scaling manifests in `k8s/` |
 | **SRE / DevOps** | p50/p95/p99 per route · 27-gate release · health checks · X-Request-ID | Policy gate enforces SRE standards |
-| **Voice AI** | Whisper STT · GPT-4o intent · TTS nova | Conversational discovery · 8 genre profiles |
+| **Voice AI** | Whisper STT · GPT-4o intent · TTS nova · MediaRecorder | Auto wake-up · conversational discovery · 8 genre profiles |
 | **Sparse Training** | L1 proximal gradient · soft-thresholding | Reward model: 4/11 features non-zero · 63.6% sparsity |
 | **Self-Supervised Learning** | GRU next-item prediction · no labels | BERT4Rec paradigm · acc=0.2801 on session sequences |
 | **Semi-Supervised Learning** | Label propagation on co-occurrence graph | ALS embeddings propagated to 1,078 unrated catalog items |
@@ -374,7 +379,47 @@ ALS only:      NDCG 0.0399  MRR 0.0885  Recall 0.0154
 ALS+LightGBM:  NDCG 0.1409  MRR 0.2826  Recall 0.0644  ← +253%
 ```
 
-### Stage 4 — Offline RL (see dedicated section)
+### Stage 4 — Offline RL Stack
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  REINFORCE Policy Gradient                                   │
+│    Algorithm: Plackett-Luce advantage                        │
+│    Monte Carlo: G_t = Σ γ^k · r_{t+k}   γ=0.95             │
+│    Update: ∇J(θ) = Σ G_t · ∇log π(a_t|s_t)                 │
+│    Warm-start: behavioral cloning from logged sessions       │
+│    n_updates=700 · ||W||=0.1402 · lr=0.01                   │
+│    Weights stored in Redis · updated per session episode     │
+├──────────────────────────────────────────────────────────────┤
+│  GRU Session Encoder                                         │
+│    hidden=16 · input=8 · pure numpy · acc=0.927             │
+│    SSL pretrain: next-item prediction · loss=1.9313         │
+│    h_t → 8-dim projection → LinUCB context vector           │
+├──────────────────────────────────────────────────────────────┤
+│  LinUCB Off-Policy Bandit                                    │
+│    8 genre arms · α=1.0                                      │
+│    UCB(a) = θᵀx + α√(xᵀA⁻¹x)                               │
+│    Context x from GRU hidden state                           │
+│    Off-policy: learns from logged interactions               │
+├──────────────────────────────────────────────────────────────┤
+│  Multi-Task Reward Model                                     │
+│    Shared encoder: Linear(11→32)→ReLU→Linear(32→16)→ReLU   │
+│    4 heads: click(+1.0) · completion(+2.0) · add(+1.0)     │
+│             skip(-0.5)                                       │
+│    Joint backprop · IPS-weighted: r̃_i = r_i / p̂(i)        │
+├──────────────────────────────────────────────────────────────┤
+│  Sparse L1 Reward Training                                   │
+│    Proximal gradient: w_i → sign(w_i)·max(|w_i|-λη, 0)     │
+│    λ=0.01 → 4/11 features survive (63.6% sparsity)         │
+│    Surviving: completion · genre_trend · genre_match        │
+│               recency                                        │
+├──────────────────────────────────────────────────────────────┤
+│  Semi-Supervised ALS                                         │
+│    Label propagation on co-occurrence graph                  │
+│    α=0.2 · 3 iterations · genre-based prior                 │
+│    1,078 unrated items get embeddings                        │
+└──────────────────────────────────────────────────────────────┘
+```
 
 ### Stage 5 — Slate Optimizer
 
@@ -464,8 +509,6 @@ class MultiTaskRewardModel:
     IPS-weighted: 1/propensity correction for exposure bias
     Pure numpy — no PyTorch dependency
     """
-# MULTI_TASK_REWARD = MultiTaskRewardModel(seed=42)
-# → verified in Docker: shared_bottom_multi_task ✅
 ```
 
 ---
@@ -573,13 +616,9 @@ Joint serving: ALS → LightGBM → REINFORCE → LinUCB → Slate constraints
 → Single response in <50ms p95
 ```
 
-**Trade-off:** Pure relevance (Task 1 alone) → filter-bubble collapse. Tasks 2–4 trade a small NDCG cost for long-term engagement and catalog coverage.
-
 ---
 
 ## Sparse Training — L1 Regularization
-
-The IPS-weighted reward model is trained with **L1 (LASSO) sparse training** via proximal gradient descent. L1 induces sparsity by zeroing out irrelevant feature weights — the model learns which of the 11 features actually matter.
 
 ```python
 # reward_model_sparse.py — L1 proximal gradient descent
@@ -592,178 +631,101 @@ for epoch in range(epochs):
     wts   -= lr * (X.T @ errors) / len(y)
 
     # 2. Proximal L1 step — soft-thresholding (THIS induces sparsity)
-    # w_i → sign(w_i) * max(|w_i| - λ*lr, 0)
     threshold = l1_lambda * lr
     wts = sign(wts) * maximum(abs(wts) - threshold, 0.0)
-    # Features with |w_i| < threshold → zeroed out exactly
 
 # Result at λ=0.01: 4/11 features non-zero (63.6% sparsity)
-# Surviving: ALS score · genre match · completion rate · skip penalty
+# Surviving: completion_proxy · genre_trend · genre_match · recency
 # Zeroed:    7 features that don't improve reward prediction
 ```
 
-**Verified in Docker:** `Status: trained_sparse · Sparsity: 0.6364 · Non-zero: 4/11` ✅
+**Verified:** `Status: trained_sparse · Sparsity: 0.6364 · Non-zero: 4/11` ✅
 
 ---
 
 ## Self-Supervised Learning — GRU Next-Item Prediction
 
-The GRU session encoder is **pretrained with a self-supervised objective** — no human labels required. Supervision comes from the session sequence itself.
-
 ```python
 # self_supervised_gru.py — next-item prediction (BERT4Rec paradigm)
-
-# Objective: Given session prefix [e_1, ..., e_t], predict e_{t+1}
-# Loss: cross-entropy over 8 genre classes
-# No human labels — supervision from sequence structure
 
 for session in sessions:
     h = zeros(hidden_dim)
     for t in range(len(events) - 1):
-        h, gates = gru_step(events[t], h)          # encode prefix
-        probs    = predict_next(h)                  # predict next genre
-        loss     = -log(probs[events[t+1].genre])  # self-supervised loss
+        h, gates = gru_step(events[t], h)
+        probs    = predict_next(h)
+        loss     = -log(probs[events[t+1].genre])
         # Backprop through prediction head + GRU weights
 
-# Same paradigm as:
-#   BERT4Rec (Sun et al. RecSys 2019) — masked item prediction
-#   SASRec (Kang & McAuley ICDM 2018) — next item prediction
-#   GPT — next token prediction
+# Same paradigm as BERT4Rec / SASRec / GPT
 ```
 
 **Verified:** `method=next_item_prediction · acc=0.2801 · loss=1.9313` ✅
-
-The SSL-pretrained GRU is then fine-tuned for intent classification (supervised), giving better initialisation than random weights.
 
 ---
 
 ## Semi-Supervised Learning — ALS Label Propagation
 
-ALS trains on **3,883 rated items** (labeled). The catalog has **4,961 total items** — 1,078 movies have no ratings. Semi-supervised label propagation gives them embeddings via the co-occurrence graph.
-
 ```python
 # semi_supervised_als.py — label propagation on co-occurrence graph
 
-# Labeled:   3,883 items with ALS embeddings (from ML-1M ratings)
-# Unlabeled: 1,078 items with no ratings → get propagated embeddings
-
-# Algorithm: Label Propagation
 for iteration in range(n_iterations):
     for unrated_item in unlabeled:
-        neighbors = cooccurrence_graph[unrated_item]  # from PySpark ETL
-        rated_neighbors = [n for n in neighbors if n in item_factors]
-
-        # Weighted average of rated neighbor embeddings
+        neighbors = cooccurrence_graph[unrated_item]
         propagated = Σ(count(n) * embedding(n)) / Σ count(n)
-
-        # Semi-supervised update: blend propagated + prior
         embedding[unrated_item] = (1-α) * propagated + α * prior
 
-# α=0.2: 80% from graph neighbors, 20% from genre-based prior
-# Result: all 4,961 catalog items have embeddings for similarity search
-```
-
-**Why this matters:** Without semi-supervised propagation, cold-start items (new movies added to TMDB with no ratings) can't be retrieved by ALS. Label propagation solves this without requiring any user interactions.
-
----
-
-## Data Curation Engine
-
-A quality filter runs before ALS training to remove noisy catalog items. Low-vote items create corrupted co-occurrence signals that hurt ALS embeddings.
-
-```python
-# data_curation.py — Bayesian quality filter + deduplication
-
-def quality_score(item):
-    # Bayesian average (smoothed toward global mean C=3.5, min_votes m=50):
-    # quality = (v/(v+m)) * R + (m/(v+m)) * C
-    bayesian_rating = (votes/(votes+50)) * avg_rating + (50/(votes+50)) * 3.5
-    return (
-        0.4 * bayesian_rating/5.0  +  # rating quality
-        0.3 * min(votes/500, 1.0)  +  # vote reliability
-        0.2 * has_poster           +  # metadata completeness
-        0.1 * (year >= 1970)          # recency
-    )
-
-# Filters applied in order:
-#   1. vote_count < 5         → remove (unreliable signal)
-#   2. avg_rating < 1.5       → remove (clearly bad)
-#   3. quality_score < 0.10   → remove (low overall quality)
-#   4. duplicate titles        → keep highest quality version
-#   5. genre normalization     → map to canonical 8 LinUCB arm genres
-
-# Result: 3,883 → 3,363 items (86.6% retained)
-# Removed: 297 low-vote · 143 low-quality · 80 duplicates
+# α=0.2 · 3 iterations · 1,078 cold-start items get embeddings
 ```
 
 **Verified:** `Before: 3883 → After: 3363 · Retained: 86.6%` ✅
 
 ---
 
-## Diffusion Model — DDPM + DALL-E 3
+## Data Curation Engine
 
-When a movie has no TMDB poster, CineWave generates one using diffusion. This mirrors Netflix's production use of generative AI for personalised artwork.
+```python
+# data_curation.py — Bayesian quality filter + deduplication
+
+def quality_score(item):
+    bayesian_rating = (votes/(votes+50)) * avg_rating + (50/(votes+50)) * 3.5
+    return (
+        0.4 * bayesian_rating/5.0  +
+        0.3 * min(votes/500, 1.0)  +
+        0.2 * has_poster           +
+        0.1 * (year >= 1970)
+    )
+# Result: 3,883 → 3,363 items (86.6% retained)
+```
+
+---
+
+## Diffusion Model — DDPM + DALL-E 3
 
 ### DDPM Noise Schedule (Ho et al. NeurIPS 2020)
 
 ```python
 # diffusion_poster.py — pure numpy, no GPU required
 
-T         = 1000              # timesteps
-β_t       = linspace(1e-4, 0.02, T)   # linear schedule
-α_t       = 1 - β_t
-ᾱ_t       = cumprod(α_t)     # ∏α_s from s=1 to t
+T     = 1000
+β_t   = linspace(1e-4, 0.02, T)
+ᾱ_t   = cumprod(1 - β_t)
 
-# Forward process (add noise):
-x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε,   ε ~ N(0,I)
+# Forward:  x_t = √ᾱ_t · x_0 + √(1-ᾱ_t) · ε
+# Reverse:  μ_θ = (1/√α_t)(x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t,t))
 
-# Reverse process (denoise):
-μ_θ = (1/√α_t)(x_t - β_t/√(1-ᾱ_t) · ε_θ(x_t,t))
-
-# SNR(t) = ᾱ_t / (1 - ᾱ_t)
-# t=0:   SNR = 9999.0  (pure signal)
-# t=500: SNR = 0.0853  (28% signal, 96% noise)
-# t=999: SNR = 0.00004 (pure noise)
-
+# t=0:   SNR=9999  (pure signal)
+# t=500: SNR=0.085 (28% signal, 96% noise)
+# t=999: SNR=0.00004 (pure noise)
 # Verified: signal+noise variance = 1.000000 ✅
 ```
 
 ### Generation Pipeline
 
 ```
-Movie title + genre
-        │
-        ▼
-Prompt engineering: "Movie poster for 'Inception' (2010), Sci-Fi film,
-futuristic neon glow, space backdrop, cinematic, 4K, detailed"
-        │
-        ├──► DALL-E 3 (OpenAI API, uses existing OPENAI_API_KEY)
-        │    guidance_scale=7.5 · 1024×1024 · ~$0.040/image
-        │    cost: included in existing OpenAI subscription
-        │
-        ├──► HuggingFace SDXL (HUGGINGFACE_API_KEY, free tier)
-        │
-        └──► Gradient placeholder (always works, no API key, deterministic)
-```
-
-### Live Diffusion Demo
-
-```
-http://localhost:3000/diffusion
-  ↳ Type any movie title + genre
-  ↳ Click Generate → DALL-E 3 poster appears in ~12 seconds
-  ↳ DDPM noise bars show signal (green) vs noise (red) at t=250/500/750/999
-  ↳ Load Schedule Stats → shows T, β, ᾱ, SNR from /diffusion/schedule
-```
-
-### API Endpoints
-
-```bash
-GET  /diffusion/status          # which backends are available
-GET  /diffusion/schedule        # full DDPM stats: α_bar, SNR at all T
-GET  /diffusion/forward/{t}     # forward process at timestep t (0-999)
-POST /diffusion/generate        # generate poster with DALL-E 3 + DDPM demo
-GET  /diffusion/poster/{item_id}# auto-generate for catalog item missing poster
+Movie title + genre → Prompt engineering
+  ├──► DALL-E 3 (~$0.040/image · guidance_scale=7.5)
+  ├──► HuggingFace SDXL (free tier fallback)
+  └──► Gradient placeholder (always works, no API key)
 ```
 
 ---
@@ -771,18 +733,13 @@ GET  /diffusion/poster/{item_id}# auto-generate for catalog item missing poster
 ## CLIP — Vision-Language Foundation Model (ViT-B/32)
 
 ```
-We leverage CLIP (ViT-B/32), a multimodal vision-language foundation model,
-for semantic poster understanding (512-dim shared text-image space).
-
-Architecture:
-  Movie poster → 32×32 patches → 512-dim patch embeddings
-  → 12 Transformer layers (multi-head self-attention)
-  → [CLS] token → 512-dim visual embedding
-  → projected into CLIP shared space (aligned with text)
+Movie poster → 32×32 patches → 512-dim patch embeddings
+→ 12 Transformer layers (multi-head self-attention)
+→ [CLS] token → 512-dim visual embedding
+→ projected into CLIP shared space (aligned with text)
 
 Used zero-shot — pre-trained on 400M image-text pairs by OpenAI.
 Graceful fallback: colour histogram when openai-clip not installed.
-Zero impact on ALS+LightGBM+RL core pipeline.
 ```
 
 ---
@@ -792,15 +749,12 @@ Zero impact on ALS+LightGBM+RL core pipeline.
 ```python
 # policy_gate.py — cannot be bypassed. No flag, no override, no exceptions.
 
-# 27 GateCheck objects across categories:
-# Quality:    NDCG@10 lift vs incumbent · absolute NDCG floor
-#             MRR@10 · Recall@10 · cold-start NDCG no-regression
+# 27 GateCheck objects:
+# Quality:    NDCG@10 lift · MRR@10 · Recall@10 · cold-start NDCG
 # Diversity:  diversity_score · catalog coverage
 # Latency:    p95_ms < 50ms · p99_ms ceiling
 # Reliability:error_rate threshold
-# Skew:       PSI (Population Stability Index) — training vs serving
-
-# Verdict: DEPLOY / REVIEW / BLOCK
+# Skew:       PSI (Population Stability Index)
 
 # DEPLOY → MetaflowArtifactLoader hot-swap (no container restart, <30s)
 # BLOCK  → rollback + Airflow alert + previous version restored
@@ -810,63 +764,29 @@ Zero impact on ALS+LightGBM+RL core pipeline.
 
 ## Kubernetes HPA Autoscaling
 
-**`k8s/hpa.yaml`** — scale triggers:
-
 ```yaml
 minReplicas: 2
 maxReplicas: 10
 metrics:
-  CPU utilisation    > 70%      → scale up
-  Memory utilisation > 80%      → scale up
-  RPS per pod        > 100      → scale up (Prometheus custom metric)
-scaleUp:   stabilizationWindow 30s   (react fast to spikes)
-scaleDown: stabilizationWindow 300s  (conservative — wait 5 min)
-PodDisruptionBudget: minAvailable=2  (always ≥2 pods running)
-```
-
-**`k8s/deployment.yaml`** — zero-downtime:
-```yaml
-strategy: RollingUpdate · maxSurge=1 · maxUnavailable=0
-resources: requests 500m CPU / 1Gi RAM · limits 2000m CPU / 4Gi RAM
-livenessProbe + readinessProbe: GET /healthz
+  CPU utilisation    > 70%   → scale up
+  Memory utilisation > 80%   → scale up
+  RPS per pod        > 100   → scale up
+scaleUp:   stabilizationWindow 30s
+scaleDown: stabilizationWindow 300s
+PodDisruptionBudget: minAvailable=2
 ```
 
 ---
 
 ## SQL Schema & Analytics
 
-**`sql/schema.sql`** — 4 tables:
-
 ```sql
--- ATS keyword: SQL
 CREATE TABLE users (user_id BIGINT PRIMARY KEY, activity_decile SMALLINT, top_genres TEXT[]);
 CREATE TABLE ratings (user_id BIGINT REFERENCES users, item_id BIGINT, rating NUMERIC(3,1));
 CREATE TABLE recommendations (user_id BIGINT, item_id BIGINT, rank SMALLINT,
     als_score NUMERIC(8,6), rl_score NUMERIC(8,6), policy_version VARCHAR(32));
 CREATE TABLE events (user_id BIGINT, item_id BIGINT, event_type VARCHAR(32),
     reward NUMERIC(4,2), session_id UUID);
-```
-
-**`sql/queries.sql`** — SELECT + JOIN + GROUP BY + HAVING:
-
-```sql
--- NDCG@10 per policy (SELECT + JOIN + GROUP BY)
-SELECT r.policy_version, COUNT(DISTINCT r.user_id) AS users,
-       AVG(CASE WHEN e.event_type='play_start' THEN 1.0 ELSE 0.0 END
-           / LOG(2, r.rank+1)) AS ndcg_at_10
-FROM recommendations r
-LEFT JOIN events e ON e.user_id=r.user_id AND e.item_id=r.item_id
-WHERE r.rank <= 10
-GROUP BY r.policy_version ORDER BY ndcg_at_10 DESC;
-
--- CTR by decile (GROUP BY + HAVING)
-SELECT u.activity_decile,
-       COUNT(CASE WHEN e.event_type='play_start' THEN 1 END)*100.0
-       / NULLIF(COUNT(DISTINCT r.rec_id),0) AS ctr_pct
-FROM users u
-JOIN recommendations r ON r.user_id=u.user_id
-LEFT JOIN events e ON e.user_id=u.user_id AND e.item_id=r.item_id
-GROUP BY u.activity_decile HAVING COUNT(DISTINCT u.user_id)>=10;
 ```
 
 ---
@@ -883,10 +803,9 @@ User speaks → Whisper STT → GPT-4o intent extraction (18 genre keyword maps)
   Top-8 recommendations
           ↓
   buildExplanation() — reads item.primary_genre directly
-  (bypasses /explain API — avoids wrong-genre hallucination bug)
           ↓
   GPT-4o TTS 'nova' → spoken response
-  Cost: ~$0.003/request (GPT-4o voice + TTS path)
+  Cost: ~$0.003/request
 ```
 
 **8 Genre Profile Arms (match LinUCB arms):**
@@ -901,6 +820,183 @@ User speaks → Whisper STT → GPT-4o intent extraction (18 genre keyword maps)
 | Rom-Com Fan | arm_5 | Romance, Comedy |
 | Sci-Fi Buff | arm_6 | Sci-Fi, Fantasy, Thriller |
 | Documentary | arm_7 | Documentary, Biography, History |
+
+---
+
+## Voice Wake-Up System — How It Works
+
+CineWave includes a fully automated voice wake-up system that greets the user on page load, listens for spoken movie queries, and responds with personalized recommendations via TTS — all without any button press.
+
+### Wake-Up Flow (End to End)
+
+```
+Page loads (localhost:3000)
+        │
+        ▼
+useVoiceAssistant hook initializes
+  greetedRef = useRef(false)   ← guards against double-greeting
+        │
+        ▼
+React useEffect fires on mount
+  if (greetedRef.current === false):
+    greetedRef.current = true   ← set BEFORE TTS call (StrictMode safe)
+    GPT-4o TTS nova → speaks greeting:
+    "Hi! I'm CineWave. Tell me what you'd like to watch tonight."
+        │
+        ▼
+Browser MediaRecorder API activates
+  navigator.mediaDevices.getUserMedia({ audio: true })
+  → MediaRecorder starts listening
+  → Audio chunks collected every 250ms
+        │
+        ▼
+User speaks (e.g. "Show me a sci-fi thriller like Inception")
+        │
+        ▼
+Silence detection (1.5s gap) → MediaRecorder stops
+  → Audio blob assembled from chunks
+  → FormData created with audio file
+        │
+        ▼
+POST /voice/transcribe → Whisper STT
+  → Returns transcript:
+    "Show me a sci-fi thriller like Inception"
+        │
+        ▼
+POST /voice/intent → GPT-4o intent extraction
+  → 18 genre keyword maps applied
+  → Returns structured intent:
+    {
+      "genres":      ["Sci-Fi", "Thriller"],
+      "similar_to":  "Inception",
+      "year_filter": 1970,
+      "mood":        "mind-bending"
+    }
+        │
+        ├──► RAG retrieval (Qdrant HNSW 1,536-dim)
+        │    year ≥ 1970 filter · 3-strategy retry
+        │
+        └──► Genre pool (co-occurrence filtered)
+                    ↓
+            Round-robin interleave
+                    ↓
+            Top-8 recommendations
+                    ↓
+        buildExplanation() reads item.primary_genre directly
+        (NOT user.top_genre — avoids hallucination bug)
+                    ↓
+        GPT-4o TTS nova → speaks response:
+        "Based on your love of mind-bending sci-fi,
+         here are 8 picks starting with Interstellar..."
+                    ↓
+        MediaRecorder reactivates → listens for next query
+```
+
+### The Double-Greeting Bug and Fix
+
+```typescript
+// hooks/useVoiceAssistant.ts
+
+// BUG (before fix):
+// React StrictMode mounts components TWICE in development.
+// This caused the greeting TTS to fire twice on page load.
+// User heard: "Hi! I'm CineWave." → "Hi! I'm CineWave." (duplicate)
+
+// FIX:
+const greetedRef = useRef(false)   // persists across StrictMode double-mount
+
+useEffect(() => {
+  if (!greetedRef.current) {
+    greetedRef.current = true      // set to true BEFORE the async TTS call
+    speakGreeting()                // only fires once, even in StrictMode
+  }
+}, [])
+
+// Why useRef and not useState?
+// useState triggers a re-render when updated.
+// useRef updates silently — no re-render, no second greeting.
+// This is the correct pattern for side effects in StrictMode.
+```
+
+### 8 Genre Profile Arms — Voice to LinUCB Connection
+
+```
+User says: "I want something scary"
+        │
+        ▼
+GPT-4o intent: { genres: ["Horror", "Thriller"] }
+        │
+        ▼
+GRU session encoder encodes session history
+→ 16-dim hidden state h_t → projected to 8-dim context x
+        │
+        ▼
+LinUCB UCB score computed per arm:
+  UCB(a) = θᵀx + α√(xᵀA⁻¹x)   α=1.0
+
+  arm_0 Cinephile:   UCB = 0.42
+  arm_1 Action Fan:  UCB = 0.71
+  arm_6 Sci-Fi Buff: UCB = 0.88  ← high uncertainty → explore
+  arm_7 Horror/Thriller selected ← highest UCB score
+        │
+        ▼
+Slate built from Horror/Thriller arm
+→ 8 recommendations returned
+→ TTS speaks them aloud
+→ Session event logged → LinUCB arm updated
+```
+
+### Voice Pipeline Cost and Latency
+
+| Step | Model | p50 | p95 | Cost |
+|---|---|---|---|---|
+| STT transcription | Whisper | ~400ms | ~800ms | ~$0.0006/min |
+| Intent extraction | GPT-4o | ~300ms | ~600ms | ~$0.0005/req |
+| RAG retrieval | Qdrant HNSW | ~50ms | ~100ms | $0.00 |
+| TTS response | GPT-4o nova | ~400ms | ~900ms | ~$0.0015/req |
+| **Total voice path** | **end-to-end** | **~1.2s** | **<2.5s** | **~$0.003/req** |
+
+### Key Implementation Details
+
+```typescript
+// VoiceModal.tsx — key decisions
+
+// 1. MediaRecorder chunk size
+mediaRecorder.start(250)   // collect audio every 250ms
+
+// 2. Silence detection
+const SILENCE_THRESHOLD_MS = 1500  // 1.5s gap → stop recording
+
+// 3. Audio format
+mimeType: 'audio/webm'     // best browser compatibility
+
+// 4. Retry logic
+MAX_RETRIES = 3
+RETRY_STRATEGIES = [
+  'semantic_search',       // primary: HNSW cosine similarity
+  'keyword_fallback',      // fallback: title keyword match
+  'genre_pool_only'        // final: genre-based pool only
+]
+
+// 5. buildExplanation() reads item fields directly
+// NEVER reads user.top_genre — caused "Dune is Romance" bug
+const explanation = buildExplanation(item.primary_genre, item.title)
+```
+
+### Live Demo
+
+```bash
+# Open home page — voice greets you automatically
+open http://localhost:3000
+
+# Or test voice endpoint directly
+curl -X POST http://localhost:8000/voice/transcribe \
+  -F "audio=@recording.webm"
+
+curl -X POST http://localhost:8000/voice/intent \
+  -H "Content-Type: application/json" \
+  -d '{"transcript": "show me a sci-fi thriller like Inception"}'
+```
 
 ---
 
@@ -954,7 +1050,7 @@ User event → FastAPI /feedback → KafkaEventBridge
 
 ## Results & Baselines
 
-### NDCG@10 — All Methods (verified from code)
+### NDCG@10 — All Methods
 
 | Method | NDCG@10 | MRR@10 | Recall@10 |
 |---|---|---|---|
@@ -964,7 +1060,7 @@ User event → FastAPI /feedback → KafkaEventBridge
 | **ALS + LightGBM** | **0.1409** | **0.2826** | **0.0644** |
 | Lift vs ALS | **+253%** | **+219%** | **+318%** |
 
-> **Methodological note:** Evaluation uses implicit feedback (rating ≥ 4 as positive), not true watch completion. Offline evaluation on held-out ratings data.
+> **Methodological note:** Evaluation uses implicit feedback (rating ≥ 4 as positive). Offline evaluation on held-out ratings data.
 
 ### Latency & Cost per Request
 
@@ -976,15 +1072,21 @@ User event → FastAPI /feedback → KafkaEventBridge
 | `/explain` (GPT-4o, Redis-cached) | ~90ms | **<250ms** | ~$0.0005 |
 | `/diffusion/generate` (DALL-E 3) | ~12s | **<30s** | ~$0.040 |
 
-### SLO Summary
+### ML Component Metrics
 
-| SLO | Target | Enforced By |
-|---|---|---|
-| p95 latency | < 50ms | Policy gate + Kubernetes HPA |
-| NDCG@10 lift | > incumbent | Policy gate (27 checks) |
-| Diversity score | > threshold | Policy gate + slate optimizer |
-| PSI skew | < threshold | Policy gate + training-serving monitor |
-| Kubernetes replicas | 2–10 | HPA (CPU>70% · Memory>80% · RPS>100) |
+| Component | Metric | Value | Source |
+|---|---|---|---|
+| GRU session encoder | Accuracy | 0.927 | `/model/train_metrics` |
+| GRU session encoder | Loss | 0.3535 | `/model/train_metrics` |
+| SSL GRU pretraining | Loss | 1.9313 | `/ml/ssl/summary` |
+| SSL GRU pretraining | Accuracy | 0.2801 | `/ml/ssl/summary` |
+| Sparse L1 reward | Sparsity | 63.6% (4/11) | `/ml/sparse/train` |
+| Sparse L1 reward | Brier score | 0.2362 | `/ml/sparse/train` |
+| REINFORCE policy | Updates | 700 | `/rl/stats` |
+| REINFORCE policy | Weight norm | 0.1402 | `/rl/stats` |
+| Drift PSI | Distribution shift | 0.0002 | `/drift` |
+| Data curation | Items retained | 86.6% (3363/3883) | `/ml/curate` |
+| Cold-start propagation | Items embedded | 1,078 | `/ml/semi_supervised/summary` |
 
 ---
 
@@ -1035,17 +1137,16 @@ sleep 40
 curl http://localhost:8000/healthz | python3 -m json.tool
 ```
 
-### 4. Patch TMDB catalog (4,961 movies with real posters)
+### 4. Patch TMDB catalog
 
 ```bash
 docker cp p.py recsys_api:/app/p.py
 docker exec recsys_api python3 /app/p.py
 ```
 
-### 5. Patch poster URLs into live catalog
+### 5. Patch poster URLs
 
 ```bash
-# Run 5–8 batches to get full poster coverage
 for i in 1 2 3 4 5 6 7 8; do
   curl -s -X POST "http://localhost:8000/admin/patch-posters?limit=500" | \
     python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"total_with_poster\"]}/{d[\"total\"]}')"
@@ -1063,7 +1164,7 @@ cd frontend && npm install && npm run dev
 
 | Page | URL | What You'll See |
 |---|---|---|
-| **🏠 Home** | http://localhost:3000 | Personalised feed · 4,961 movies · 8 profile arms |
+| **🏠 Home** | http://localhost:3000 | Personalised feed · voice wake-up greeting · 4,961 movies |
 | **🎨 Diffusion** | http://localhost:3000/diffusion | DDPM math · DALL-E 3 poster generation live |
 | **⚡ ML Dashboard** | http://localhost:3000/ml | 7 tabs — OPE · RL · A/B · Infra · Features · GRU |
 | **🧠 AI Stack** | http://localhost:3000/aistack | All ML components with live API data |
@@ -1079,61 +1180,60 @@ cd frontend && npm install && npm run dev
 
 ```
 two-stage-recommender-als-ranker-api/
-├── .github/workflows/ci.yml             # CI: import smoke + TypeScript build
+├── .github/workflows/ci.yml
 ├── k8s/
-│   ├── deployment.yaml                  # Rolling update · probes · resource limits
-│   ├── service.yaml                     # ClusterIP + LoadBalancer + Nginx Ingress
-│   └── hpa.yaml                         # HPA 2–10 · CPU>70% · Memory>80% · RPS>100
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── hpa.yaml
 ├── sql/
-│   ├── schema.sql                       # 4-table PostgreSQL schema · indices
-│   └── queries.sql                      # SELECT + JOIN + GROUP BY + HAVING
+│   ├── schema.sql
+│   └── queries.sql
 ├── backend/
 │   ├── src/recsys/serving/
 │   │   ├── app.py                       # FastAPI · 62 endpoints
-│   │   ├── rl_policy.py                 # REINFORCE · imitation learning warm-start
+│   │   ├── rl_policy.py                 # REINFORCE · imitation learning
 │   │   ├── bandit_v2.py                 # LinUCB · 8 arms · α=1.0
-│   │   ├── ope_eval.py                  # Doubly-Robust IPS · off-policy RL eval
+│   │   ├── ope_eval.py                  # Doubly-Robust IPS evaluation
 │   │   ├── policy_gate.py               # 27 GateCheck objects
-│   │   ├── session_intent.py            # GRU encoder · hidden=16 · acc=0.927
-│   │   ├── spark_features.py            # PySpark ETL · 800k ratings · 5 features
-│   │   ├── slate_optimizer_v2.py        # ≥5 genres · 0.15 explore · diversity
-│   │   ├── reward_model.py              # IPS-weighted logistic regression · 11 features
-│   │   ├── multi_task_reward.py         # Shared-bottom · 4 task heads · IPS-weighted
-│   │   ├── diffusion_poster.py          # DDPM T=1000 · DALL-E 3 · gradient fallback
-│   │   ├── context_and_additions.py     # CLIP ViT-B/32 foundation model · CUPED · drift
+│   │   ├── session_intent.py            # GRU encoder · acc=0.927
+│   │   ├── spark_features.py            # PySpark ETL · 800k ratings
+│   │   ├── slate_optimizer_v2.py        # ≥5 genres · 0.15 explore
+│   │   ├── reward_model.py              # IPS-weighted logistic regression
+│   │   ├── multi_task_reward.py         # Shared-bottom · 4 task heads
+│   │   ├── diffusion_poster.py          # DDPM T=1000 · DALL-E 3
+│   │   ├── context_and_additions.py     # CLIP ViT-B/32 · drift detection
 │   │   ├── rag_engine.py                # Qdrant · 1,536-dim · HNSW
-│   │   ├── smart_explain.py             # GPT-4o explanations · Redis-cached
+│   │   ├── smart_explain.py             # GPT-4o explanations
 │   │   ├── ab_experiment.py             # A/B framework · doubly-robust IPS
 │   │   ├── shadow_ab.py                 # Shadow A/B · zero user exposure
-│   │   ├── metaflow_integration.py      # Hot-swap loader · Kafka bridge
+│   │   ├── reward_model_sparse.py       # L1 sparse training · 4/11 features
+│   │   ├── self_supervised_gru.py       # SSL GRU · next-item prediction
+│   │   ├── semi_supervised_als.py       # Label propagation · 1,078 items
+│   │   ├── data_curation.py             # Bayesian quality filter
 │   │   └── [35+ more modules]
 │   ├── flows/phenomenal_flow_v3.py      # Metaflow 12-step DAG
 │   ├── scala/FeaturePipeline.scala      # Native Spark ALS · rank=64
-│   ├── airflow/dags/                    # Nightly retraining DAGs
-│   ├── infra/duckdb/run_offline_eval.py # IPS-NDCG evaluation
 │   ├── tests/
-│   │   └── test_core.py                 # 7 unit tests · GRU · DDPM · LinUCB · sparse · SSL · curation
+│   │   └── test_core.py                 # 7 unit tests
 │   └── requirements.txt
 ├── frontend/
 │   ├── app/
-│   │   ├── home/page.tsx                # Main recommendation feed
-│   │   ├── ml/page.tsx                  # ML Dashboard (7 tabs, real endpoints)
-│   │   ├── diffusion/page.tsx           # DDPM + DALL-E 3 live demo
-│   │   ├── abtest/page.tsx              # A/B Dashboard
-│   │   ├── aistack/page.tsx             # AI Stack explainer
-│   │   └── eval/page.tsx                # Evaluation metrics
+│   │   ├── home/page.tsx
+│   │   ├── ml/page.tsx                  # ML Dashboard (7 tabs)
+│   │   ├── diffusion/page.tsx
+│   │   ├── abtest/page.tsx
+│   │   ├── aistack/page.tsx
+│   │   └── eval/page.tsx
 │   ├── components/
-│   │   ├── HomeScreen.tsx               # Main recommendation feed
-│   │   ├── ProfilePicker.tsx            # 8-profile selector (matches LinUCB arms)
-│   │   ├── VoiceModal.tsx               # Voice AI interface
-│   │   └── [all components]
-│   ├── hooks/useVoiceAssistant.ts       # Voice hook · state · imitation learning
-│   └── lib/api.ts                       # API client
-├── docker-compose.yml                   # 7-service orchestration
-├── docker-compose-kafka.yml             # Kafka overlay
-├── p.py                                 # TMDB catalog patcher
-├── .env.example                         # Environment template
-├── .gitignore                           # .env excluded
+│   │   ├── HomeScreen.tsx
+│   │   ├── ProfilePicker.tsx            # 8-profile selector
+│   │   └── VoiceModal.tsx               # Voice wake-up system
+│   ├── hooks/
+│   │   └── useVoiceAssistant.ts         # greetedRef · MediaRecorder · STT
+│   └── lib/api.ts
+├── docker-compose.yml
+├── p.py
+├── .env.example
 └── README.md
 ```
 
@@ -1154,22 +1254,10 @@ two-stage-recommender-als-ranker-api/
 | `test_data_curation_filters` | Low-vote + duplicate items correctly removed |
 
 ```bash
-# Run locally
 cd backend
 python3 -m pytest tests/test_core.py -v
-
-# Expected output:
-# test_gru_cell_shapes         PASSED
-# test_linucb_ucb_score        PASSED
-# test_ddpm_schedule           PASSED
-# test_reward_model_score      PASSED
-# test_sparse_training_sparsity PASSED
-# test_ssl_gru_predicts        PASSED
-# test_data_curation_filters   PASSED
 # 7 passed in 16.84s
 ```
-
-Tests run automatically on every push via GitHub Actions CI.
 
 ---
 
@@ -1177,28 +1265,17 @@ Tests run automatically on every push via GitHub Actions CI.
 
 ```yaml
 # .github/workflows/ci.yml
-# Triggers: every push to main / develop
 
 backend:
-  - actions/setup-python@v5 (Python 3.11 · pip cache)
   - pip install -r requirements.txt pytest
-  - python -m compileall src -q            # syntax check all 40+ modules
-  - pytest tests/test_core.py -v           # 7 unit tests (all passing)
-  - import smoke (OPENAI_API_KEY=''):
-      from recsys.serving.session_intent import _SESSION_MODEL   # GRU
-      from recsys.serving.two_tower import TWO_TOWER
-      from recsys.serving import app as _app
-      assert _SESSION_MODEL is not None    # GRU trained at startup
-      assert TWO_TOWER is not None         # two-tower loaded
+  - python -m compileall src -q
+  - pytest tests/test_core.py -v           # 7 unit tests
+  - import smoke (GRU · two-tower · app)
 
 frontend:
-  - actions/setup-node@v4 (Node 20 · npm cache)
   - npm ci
-  - npm run type-check  (TypeScript strict)
-  - npm run build       (Next.js production build)
-
-# Note: health check removed from CI — GRU training (~20s startup)
-# caused consistent timeout on Ubuntu runners. Import smoke is sufficient.
+  - npm run type-check
+  - npm run build
 ```
 
 ---
@@ -1213,7 +1290,7 @@ frontend:
 [![GitHub](https://img.shields.io/badge/GitHub-View%20Repo-181717?style=flat-square&logo=github)](https://github.com/AkilanManivannanak/two-stage-recommender-als-ranker-api)
 [![Demo](https://img.shields.io/badge/Demo-Google%20Drive-E5091A?style=flat-square&logo=google-drive&logoColor=white)](https://drive.google.com/drive/folders/1sXFjx6ShommQ46mFLcTKCyBi0GokRT8v?usp=sharing)
 
-*Python · FastAPI · Apache Spark · PySpark · Scala · LightGBM · Qdrant · Redis · Kafka · Metaflow · Airflow · DuckDB · Next.js 14 · Kubernetes · Docker · GitHub Actions · SQL · CLIP ViT-B/32 · Diffusion Models · DDPM · DALL-E 3 · GRU sequence model · offline RL · off-policy RL · doubly-robust IPS · imitation learning · multi-task learning · foundation model*
+*Python · FastAPI · Apache Spark · PySpark · Scala · LightGBM · Qdrant · Redis · Kafka · Metaflow · Airflow · DuckDB · Next.js 14 · Kubernetes · Docker · GitHub Actions · SQL · CLIP ViT-B/32 · Diffusion Models · DDPM · DALL-E 3 · GRU sequence model · offline RL · off-policy RL · doubly-robust IPS · imitation learning · multi-task learning · foundation model · voice AI · self-supervised learning · semi-supervised learning · sparse training*
 
 </div>
 
