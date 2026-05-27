@@ -223,7 +223,7 @@ INGEST → RETRIEVE → RERANK → RL REORDER → SERVE → FEEDBACK LOOP
 │  GRU session encoder (hidden=16, acc=0.927)                  │
 │    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context            │
 │  Multi-task reward model (4 heads: click·completion·add·skip)│
-│  Sparse L1 reward training (4/11 features, 63.6% sparsity)  │
+│  Sparse L1 reward training (4/11 features, 63.6% sparsity)   │
 │  Semi-supervised ALS (1,078 cold-start items propagated)     │
 └──────────────────────┬───────────────────────────────────────┘
                        │
@@ -385,38 +385,38 @@ ALS+LightGBM:  NDCG 0.1409  MRR 0.2826  Recall 0.0644  ← +253%
 ┌──────────────────────────────────────────────────────────────┐
 │  REINFORCE Policy Gradient                                   │
 │    Algorithm: Plackett-Luce advantage                        │
-│    Monte Carlo: G_t = Σ γ^k · r_{t+k}   γ=0.95             │
-│    Update: ∇J(θ) = Σ G_t · ∇log π(a_t|s_t)                 │
+│    Monte Carlo: G_t = Σ γ^k · r_{t+k}   γ=0.95               │
+│    Update: ∇J(θ) = Σ G_t · ∇log π(a_t|s_t)                   │
 │    Warm-start: behavioral cloning from logged sessions       │
-│    n_updates=700 · ||W||=0.1402 · lr=0.01                   │
+│    n_updates=700 · ||W||=0.1402 · lr=0.01                    │
 │    Weights stored in Redis · updated per session episode     │
 ├──────────────────────────────────────────────────────────────┤
 │  GRU Session Encoder                                         │
-│    hidden=16 · input=8 · pure numpy · acc=0.927             │
-│    SSL pretrain: next-item prediction · loss=1.9313         │
-│    h_t → 8-dim projection → LinUCB context vector           │
+│    hidden=16 · input=8 · pure numpy · acc=0.927              │
+│    SSL pretrain: next-item prediction · loss=1.9313          │
+│    h_t → 8-dim projection → LinUCB context vector            │
 ├──────────────────────────────────────────────────────────────┤
 │  LinUCB Off-Policy Bandit                                    │
 │    8 genre arms · α=1.0                                      │
-│    UCB(a) = θᵀx + α√(xᵀA⁻¹x)                               │
+│    UCB(a) = θᵀx + α√(xᵀA⁻¹x)                                 │
 │    Context x from GRU hidden state                           │
 │    Off-policy: learns from logged interactions               │
 ├──────────────────────────────────────────────────────────────┤
 │  Multi-Task Reward Model                                     │
-│    Shared encoder: Linear(11→32)→ReLU→Linear(32→16)→ReLU   │
-│    4 heads: click(+1.0) · completion(+2.0) · add(+1.0)     │
+│    Shared encoder: Linear(11→32)→ReLU→Linear(32→16)→ReLU     │
+│    4 heads: click(+1.0) · completion(+2.0) · add(+1.0)       │
 │             skip(-0.5)                                       │
-│    Joint backprop · IPS-weighted: r̃_i = r_i / p̂(i)        │
+│    Joint backprop · IPS-weighted: r̃_i = r_i / p̂(i)           │
 ├──────────────────────────────────────────────────────────────┤
 │  Sparse L1 Reward Training                                   │
-│    Proximal gradient: w_i → sign(w_i)·max(|w_i|-λη, 0)     │
-│    λ=0.01 → 4/11 features survive (63.6% sparsity)         │
-│    Surviving: completion · genre_trend · genre_match        │
+│    Proximal gradient: w_i → sign(w_i)·max(|w_i|-λη, 0)       │
+│    λ=0.01 → 4/11 features survive (63.6% sparsity)           │
+│    Surviving: completion · genre_trend · genre_match         │
 │               recency                                        │
 ├──────────────────────────────────────────────────────────────┤
 │  Semi-Supervised ALS                                         │
 │    Label propagation on co-occurrence graph                  │
-│    α=0.2 · 3 iterations · genre-based prior                 │
+│    α=0.2 · 3 iterations · genre-based prior                  │
 │    1,078 unrated items get embeddings                        │
 └──────────────────────────────────────────────────────────────┘
 ```
