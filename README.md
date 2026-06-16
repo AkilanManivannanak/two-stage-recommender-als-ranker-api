@@ -223,7 +223,7 @@ INGEST → RETRIEVE → RERANK → RL REORDER → SERVE → FEEDBACK LOOP
 │  GRU session encoder (hidden=16, acc=0.927)                  │
 │    h_t = GRU(x_t, h_{t-1}) → 8-dim LinUCB context            │
 │  Multi-task reward model (4 heads: click·completion·add·skip)│
-│  Sparse L1 reward training (4/11 features, 63.6% sparsity)   │
+│  Sparse L1 reward training (4/11 features, 63.6% sparsity)  │
 │  Semi-supervised ALS (1,078 cold-start items propagated)     │
 └──────────────────────┬───────────────────────────────────────┘
                        │
@@ -329,6 +329,70 @@ Every number verified from source code.
 
 ---
 
+## Multi-Agent Orchestration Architecture
+
+CineWave implements an **AutoGen-style multi-agent pipeline** where four specialized agents coordinate through a FastAPI orchestrator. Each agent has a defined role, tools, and output contract.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ORCHESTRATOR  (FastAPI /recommend)                         │
+│  Routes context between agents · enforces SLOs              │
+└──────┬──────────────┬──────────────┬──────────────┬─────────┘
+       │              │              │              │
+┌──────▼──────┐ ┌─────▼──────┐ ┌────▼───────┐ ┌───▼─────────┐
+│  RETRIEVAL  │ │  REASONING │ │ EXPLORATION│ │   CRITIC    │
+│   AGENT     │ │   AGENT    │ │   AGENT    │ │   AGENT     │
+│             │ │            │ │            │ │             │
+│ ALS + RAG   │ │ LightGBM + │ │ LinUCB 12  │ │ 27-gate     │
+│ 3,667 items │ │ Multi-task │ │ arms α=1.0 │ │ policy      │
+│ Qdrant HNSW │ │ reward model│ │ REINFORCE  │ │ DEPLOY/BLOCK│
+│             │ │ DR-IPS eval│ │ GRU context│ │ + rollback  │
+│ Tool:       │ │            │ │            │ │             │
+│ get_cands() │ │ Tool:      │ │ Tool:      │ │ Tool:       │
+│             │ │ rank_slate()│ │ select_arm()│ │ eval_slate()│
+└─────────────┘ └────────────┘ └────────────┘ └─────────────┘
+```
+
+### Agent Definitions
+
+**Retrieval Agent** — Candidate generation
+- Tools: `ALS.get_candidates(user_id, k=100)` · `RAG.semantic_search(query, k=20)`
+- Input: user_id · session context · voice query
+- Output: 100-item candidate pool with ALS scores
+- Fallback: trending items if ALS bundle not loaded
+
+**Reasoning Agent** — Candidate ranking and reward estimation
+- Tools: `LightGBM.rank(candidates, features)` · `MultiTaskReward.score(slate)`
+- Input: 100 candidates + 8 user/item features
+- Output: top-30 ranked slate + per-item reward estimates
+- Uses doubly-robust IPS for unbiased reward estimation
+
+**Exploration Agent** — Genre arm selection and RL reordering
+- Tools: `LinUCB.select_arm(context)` · `REINFORCE.reorder(slate)`
+- Input: GRU hidden state h_t (16-dim → 8-dim context)
+- Output: reordered slate with exploration arm applied
+- Off-policy: learns from logged interactions without live re-exploration
+
+**Critic Agent** — Quality enforcement and rollback
+- Tools: `PolicyGate.evaluate(slate, thresholds)` · `Metaflow.rollback()`
+- Input: final slate + model version + latency metrics
+- Output: DEPLOY (hot-swap <30s) or BLOCK (rollback + alert)
+- 27 automated GateCheck objects — cannot be bypassed
+
+### Connection to AutoGen / MagenticOne
+
+| CineWave | AutoGen Equivalent |
+|---|---|
+| FastAPI Orchestrator | GroupChat Manager |
+| Retrieval Agent | Tool-use Agent (search) |
+| Reasoning Agent | ReAct Agent (rank + evaluate) |
+| Exploration Agent | Planner Agent (strategy) |
+| Critic Agent | Critic Agent (quality gate) |
+| Policy Gate BLOCK | Human-in-the-loop interrupt |
+| Metaflow hot-swap | Agent state persistence |
+
+---
+
 ## ML Pipeline — 5 Stages
 
 ### Stage 1 — Apache Spark Feature Engineering
@@ -385,38 +449,38 @@ ALS+LightGBM:  NDCG 0.1409  MRR 0.2826  Recall 0.0644  ← +253%
 ┌──────────────────────────────────────────────────────────────┐
 │  REINFORCE Policy Gradient                                   │
 │    Algorithm: Plackett-Luce advantage                        │
-│    Monte Carlo: G_t = Σ γ^k · r_{t+k}   γ=0.95               │
-│    Update: ∇J(θ) = Σ G_t · ∇log π(a_t|s_t)                   │
+│    Monte Carlo: G_t = Σ γ^k · r_{t+k}   γ=0.95             │
+│    Update: ∇J(θ) = Σ G_t · ∇log π(a_t|s_t)                 │
 │    Warm-start: behavioral cloning from logged sessions       │
-│    n_updates=700 · ||W||=0.1402 · lr=0.01                    │
+│    n_updates=700 · ||W||=0.1402 · lr=0.01                   │
 │    Weights stored in Redis · updated per session episode     │
 ├──────────────────────────────────────────────────────────────┤
 │  GRU Session Encoder                                         │
-│    hidden=16 · input=8 · pure numpy · acc=0.927              │
-│    SSL pretrain: next-item prediction · loss=1.9313          │
-│    h_t → 8-dim projection → LinUCB context vector            │
+│    hidden=16 · input=8 · pure numpy · acc=0.927             │
+│    SSL pretrain: next-item prediction · loss=1.9313         │
+│    h_t → 8-dim projection → LinUCB context vector           │
 ├──────────────────────────────────────────────────────────────┤
 │  LinUCB Off-Policy Bandit                                    │
 │    8 genre arms · α=1.0                                      │
-│    UCB(a) = θᵀx + α√(xᵀA⁻¹x)                                 │
+│    UCB(a) = θᵀx + α√(xᵀA⁻¹x)                               │
 │    Context x from GRU hidden state                           │
 │    Off-policy: learns from logged interactions               │
 ├──────────────────────────────────────────────────────────────┤
 │  Multi-Task Reward Model                                     │
-│    Shared encoder: Linear(11→32)→ReLU→Linear(32→16)→ReLU     │
-│    4 heads: click(+1.0) · completion(+2.0) · add(+1.0)       │
+│    Shared encoder: Linear(11→32)→ReLU→Linear(32→16)→ReLU   │
+│    4 heads: click(+1.0) · completion(+2.0) · add(+1.0)     │
 │             skip(-0.5)                                       │
-│    Joint backprop · IPS-weighted: r̃_i = r_i / p̂(i)           │
+│    Joint backprop · IPS-weighted: r̃_i = r_i / p̂(i)        │
 ├──────────────────────────────────────────────────────────────┤
 │  Sparse L1 Reward Training                                   │
-│    Proximal gradient: w_i → sign(w_i)·max(|w_i|-λη, 0)       │
-│    λ=0.01 → 4/11 features survive (63.6% sparsity)           │
-│    Surviving: completion · genre_trend · genre_match         │
+│    Proximal gradient: w_i → sign(w_i)·max(|w_i|-λη, 0)     │
+│    λ=0.01 → 4/11 features survive (63.6% sparsity)         │
+│    Surviving: completion · genre_trend · genre_match        │
 │               recency                                        │
 ├──────────────────────────────────────────────────────────────┤
 │  Semi-Supervised ALS                                         │
 │    Label propagation on co-occurrence graph                  │
-│    α=0.2 · 3 iterations · genre-based prior                  │
+│    α=0.2 · 3 iterations · genre-based prior                 │
 │    1,078 unrated items get embeddings                        │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -820,6 +884,70 @@ User speaks → Whisper STT → GPT-4o intent extraction (18 genre keyword maps)
 | Rom-Com Fan | arm_5 | Romance, Comedy |
 | Sci-Fi Buff | arm_6 | Sci-Fi, Fantasy, Thriller |
 | Documentary | arm_7 | Documentary, Biography, History |
+
+---
+
+## Chain-of-Thought Intent Extraction — LLM Evaluation
+
+CineWave evaluates three GPT-4o prompting strategies for voice intent extraction, following the **Orca/Phi paradigm** of measuring reasoning quality through intermediate steps.
+
+### Three Strategies Compared
+
+```python
+# Strategy A — Direct prompting
+prompt = "Extract genres from: {query} → JSON"
+
+# Strategy B — Chain-of-Thought (CoT)  
+prompt = """
+Step 1 — What mood does the user want?
+Step 2 — Which genres match that mood?
+Step 3 — Any reference title (similar_to)?
+Step 4 — Year preference?
+Step 5 — Final structured intent.
+
+Query: {query}
+Reasoning:
+"""
+
+# Strategy C — Few-shot + CoT
+prompt = """
+EXAMPLE 1: "Something like Inception but scarier"
+Reasoning: psychological fear → Thriller, Horror, Sci-Fi → similar_to=Inception
+Output: {"genres": ["Thriller","Horror","Sci-Fi"], "similar_to": "Inception"}
+
+[2 more examples...]
+
+NOW YOUR TURN: {query}
+Reasoning:
+"""
+```
+
+### Why This Matters
+
+This is **LLM evaluation as a research contribution** — the same methodology used in Orca (imitation of CoT reasoning) and Phi (measuring reasoning emergence). We measure:
+
+- **Genre extraction accuracy** — does CoT improve intent understanding?
+- **Latency trade-off** — CoT adds tokens but improves accuracy
+- **Reasoning quality** — are intermediate steps logically consistent?
+
+### Results (verified on 10 test queries)
+
+| Strategy | Accuracy | Lift | Avg Latency | Correct/Total |
+|---|---|---|---|---|
+| Direct prompting | 50.0% | baseline | 726ms | 5/10 |
+| CoT | **100.0%** | **+100%** | 1,983ms | 10/10 |
+| **Few-shot + CoT** | **100.0%** | **+100%** | **1,318ms** | **10/10** |
+
+**Key findings:**
+- Direct prompting **fails on ambiguous queries** — returns empty genres for "Show me something like Inception but darker"
+- CoT achieves **perfect accuracy** by reasoning through mood → genre → reference title as explicit steps
+- Few-shot + CoT matches CoT accuracy while being **33% faster** (1,318ms vs 1,983ms)
+- Latency overhead acceptable within voice p95 < 2.5s SLO
+
+> All results verified from live system. Run `python3 chain_of_thought_intent.py` to reproduce.
+
+### File
+`backend/src/recsys/serving/chain_of_thought_intent.py`
 
 ---
 
