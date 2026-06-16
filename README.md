@@ -887,6 +887,90 @@ User speaks → Whisper STT → GPT-4o intent extraction (18 genre keyword maps)
 
 ---
 
+## OmniParser-Style UI Agent
+
+CineWave includes an **OmniParser-style UI grounding agent** that evaluates the system end-to-end through the browser frontend — the same way a real user interacts with it.
+
+### Why This Matters
+
+Standard recommendation evaluation uses offline metrics (NDCG, MRR) or API calls. UI-level evaluation adds a third dimension: **does the frontend correctly reflect what the ML pipeline computes?**
+
+All 8 postmortem incidents (wrong posters, missing home-feed items, double greeting) were **UI-level failures invisible to API evaluation**. The UI agent would have caught all 8 at the browser level.
+
+### 4-Agent Pipeline (AutoGen-style)
+
+```
+Screenshot
+    │
+    ▼
+┌─────────────────┐
+│ OmniParser Agent│  GPT-4o Vision → UIElement list
+│ (pixel→UI)      │  label · type · bounding box · interactable
+└────────┬────────┘
+         │ elements
+         ▼
+┌─────────────────┐
+│  Planner Agent  │  ReAct reasoning → action plan
+│  (ReAct)        │  Thought → Action → Observation
+└────────┬────────┘
+         │ actions
+         ▼
+┌─────────────────┐
+│   Actor Agent   │  Playwright → browser automation
+│  (Playwright)   │  click · type · scroll · screenshot
+└────────┬────────┘
+         │ screenshot
+         ▼
+┌─────────────────┐
+│ Verifier Agent  │  GPT-4o Vision → outcome check
+│ (MagenticOne    │  "Was expected outcome achieved?"
+│  Critic)        │  confidence score + observations
+└─────────────────┘
+```
+
+### 5 Test Scenarios
+
+| # | Scenario | Expected Outcome |
+|---|---|---|
+| 1 | Profile selection | Click Sci-Fi Buff → LinUCB arm triggers feed update |
+| 2 | Home feed | ALS recommendations visible with TMDB poster images |
+| 3 | Voice modal | Microphone interface opens · wake-up system activates |
+| 4 | ML Dashboard `/ml` | Live API metrics load across all 7 tabs |
+| 5 | Diffusion page `/diffusion` | DDPM SNR bars render · schedule stats visible |
+
+### Run It
+
+```bash
+# Install dependencies
+pip install playwright pillow openai requests
+playwright install chromium
+
+# Run all 5 scenarios (requires Docker running)
+python3 backend/src/recsys/serving/cinewave_ui_agent.py --url http://localhost:3000
+
+# Run single scenario
+python3 backend/src/recsys/serving/cinewave_ui_agent.py --scenario 0
+
+# Mock mode (no Playwright — API-based fallback)
+python3 backend/src/recsys/serving/cinewave_ui_agent.py
+# → evaluates 8 live API endpoints instead of browser UI
+```
+
+### Connection to Microsoft Research
+
+| CineWave UI Agent | MSR Equivalent |
+|---|---|
+| OmniParser Agent (GPT-4o Vision → UIElement) | OmniParser (Lu et al. 2024) |
+| Planner Agent (ReAct reasoning) | ReAct (Yao et al. 2023) |
+| Actor Agent (Playwright) | AutoGen Tool Agent |
+| Verifier Agent (Critic) | MagenticOne Critic Agent |
+| Orchestrator (GroupChat) | AutoGen GroupChat Manager |
+
+### File
+`backend/src/recsys/serving/cinewave_ui_agent.py` — 737 lines
+
+---
+
 ## Belief State Tracking
 
 Inspired by **Belief State Transformers** (Jiang et al. 2024), CineWave maintains explicit belief states across three dimensions updated online and propagated through the multi-agent pipeline.
