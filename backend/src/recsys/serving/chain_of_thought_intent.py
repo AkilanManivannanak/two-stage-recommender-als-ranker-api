@@ -202,9 +202,10 @@ def evaluate_strategies() -> dict:
         for query, expected_genres, _ in queries:
             for strategy in strategies:
                 result = extract_intent(query, strategy)
-                predicted = set(g.lower() for g in result.get("genres", []))
+                genres_raw = result.get("genres") or []
+                predicted = set(g.lower() for g in genres_raw if g)
                 expected  = set(g.lower() for g in expected_genres)
-                correct   = len(predicted & expected) > 0
+                correct   = len(predicted & expected) > 0 if predicted else False
 
                 results[level][strategy]["correct"]    += int(correct)
                 results[level][strategy]["total"]      += 1
