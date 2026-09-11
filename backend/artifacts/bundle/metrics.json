@@ -1,7 +1,6 @@
 {
-  "generated_by": "backend/scripts/build_bundle.py",
-  "generated_at": "2026-09-10T20:14:04Z",
-  "model_version": "cinewave-als64-lgbm-20260910",
+  "generated_by": "backend/scripts/evaluate.py",
+  "generated_at": "2026-09-10T20:14:02Z",
   "dataset": {
     "dataset": "MovieLens-1M",
     "n_ratings": 1000209,
@@ -19,69 +18,8 @@
     "reference_ts": 1046106219,
     "prepared_at": "2026-09-10T20:13:12Z"
   },
-  "retrieval": {
-    "algorithm": "implicit ALS (Hu/Koren/Volinsky)",
-    "factors": 64,
-    "regularization": 0.05,
-    "alpha": 40.0,
-    "iterations": 20,
-    "n_item_factors": 3667,
-    "candidate_recall_at_200": 0.4734
-  },
-  "ranker": {
-    "algorithm": "LightGBM LGBMRanker",
-    "objective": "lambdarank",
-    "metric": "ndcg@10",
-    "best_iteration": 23,
-    "n_features": 15
-  },
-  "feature_cols": [
-    "als_score",
-    "als_rank_norm",
-    "item_pop_log",
-    "item_pos_rate",
-    "item_avg_rating",
-    "item_recency_days",
-    "item_cnt_30d_log",
-    "item_year",
-    "user_cnt_log",
-    "user_avg_rating",
-    "user_pos_rate",
-    "user_tenure_days",
-    "genre_match",
-    "user_genre_affinity",
-    "genre_share"
-  ],
-  "feature_importance": {
-    "als_score": 9209.5,
-    "als_rank_norm": 4468.9,
-    "item_pop_log": 4497.3,
-    "item_pos_rate": 2103.6,
-    "item_avg_rating": 1543.3,
-    "item_recency_days": 1598.1,
-    "item_cnt_30d_log": 157.9,
-    "item_year": 1793.9,
-    "user_cnt_log": 2742.4,
-    "user_avg_rating": 1414.6,
-    "user_pos_rate": 1919.7,
-    "user_tenure_days": 2509.6,
-    "genre_match": 49.5,
-    "user_genre_affinity": 2032.0,
-    "genre_share": 2763.7
-  },
-  "metrics": {
-    "ndcg_at_10": 0.0516,
-    "ndcg_at_10_als": 0.0411,
-    "ndcg_lift_pct": 25.5,
-    "mrr_at_10": 0.0957,
-    "recall_at_10": 0.0586,
-    "ips_ndcg_at_10": 0.0216,
-    "diversity_score": 0.4209,
-    "coverage": 0.3546,
-    "candidate_recall_at_200": 0.4734,
-    "best_baseline": "cooccurrence",
-    "best_baseline_ndcg": 0.0481
-  },
+  "split_evaluated": "test",
+  "k": 10,
   "baselines": {
     "popularity": {
       "ndcg@10": 0.0423,
@@ -123,6 +61,19 @@
       "n_items_shown": 1377,
       "n_users": 5741
     }
+  },
+  "headline": {
+    "ndcg_at_10": 0.0516,
+    "ndcg_at_10_als": 0.0411,
+    "ndcg_lift_pct": 25.5,
+    "mrr_at_10": 0.0957,
+    "recall_at_10": 0.0586,
+    "ips_ndcg_at_10": 0.0216,
+    "diversity_score": 0.4209,
+    "coverage": 0.3546,
+    "candidate_recall_at_200": 0.4734,
+    "best_baseline": "cooccurrence",
+    "best_baseline_ndcg": 0.0481
   },
   "bootstrap": {
     "popularity_vs_als_only": {
@@ -166,7 +117,7 @@
       "n_boot": 2000
     }
   },
-  "slices": {
+  "slices_by_user_activity": {
     "light": {
       "n_users": 1824,
       "als_only": 0.0548,
@@ -186,10 +137,5 @@
       "delta": 0.0216
     }
   },
-  "movie_count": 3883,
-  "caveats": [
-    "Offline evaluation only. No live A/B test has been run.",
-    "IPS-NDCG uses exposure propensities estimated from the same logs it corrects; it is a bias correction, not a randomised experiment.",
-    "The ranker is trained on the validation period and evaluated on the test period; ALS never sees either."
-  ]
+  "eval_seconds": 17.9
 }

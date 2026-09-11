@@ -1,0 +1,39 @@
+<template>
+    <lightning-card title="Recommended for this customer" icon-name="standard:video">
+        <span slot="footer" class="slds-text-body_small slds-text-color_weak">
+            {metricsLabel}
+        </span>
+
+        <div class="slds-var-p-horizontal_medium">
+            <template if:true={loading}>
+                <lightning-spinner alternative-text="Loading recommendations"></lightning-spinner>
+            </template>
+
+            <template if:true={error}>
+                <div class="slds-text-color_error slds-var-p-vertical_small">{error}</div>
+            </template>
+
+            <template if:true={hasRecommendations}>
+                <ul class="slds-has-dividers_bottom-space">
+                    <template for:each={recommendations} for:item="rec">
+                        <li key={rec.key} class="slds-item slds-grid slds-grid_vertical-align-center">
+                            <div class="slds-col slds-grow">
+                                <div class="slds-text-body_regular">{rec.title}</div>
+                                <div class="slds-text-body_small slds-text-color_weak">
+                                    {rec.subtitle} · {rec.scoreLabel}
+                                </div>
+                            </div>
+                            <div class="slds-col slds-no-flex">
+                                <lightning-button
+                                    label="Log play"
+                                    data-item-id={rec.itemId}
+                                    onclick={handlePlay}>
+                                </lightning-button>
+                            </div>
+                        </li>
+                    </template>
+                </ul>
+            </template>
+        </div>
+    </lightning-card>
+</template>

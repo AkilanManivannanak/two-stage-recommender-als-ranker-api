@@ -408,6 +408,7 @@ if _TWO_TOWER_AVAILABLE:
 
 # ── Latency ring buffer ────────────────────────────────────────────────────────
 _LAT: deque[tuple[float, float]] = deque(maxlen=10_000)
+RANKER_FAILURES: deque[float] = deque(maxlen=1_000)
 def _record(ms: float): _LAT.append((time.time(), ms))
 def _stats(w=3600.0) -> dict:
     now = time.time()
@@ -417,6 +418,45 @@ def _stats(w=3600.0) -> dict:
     def p(pct): return round(float(s[min(int(n * pct // 100), n - 1)]), 2)
     return {"n": n, "p50_ms": p(50), "p90_ms": p(90), "p95_ms": p(95), "p99_ms": p(99),
             "max_ms": round(float(max(s)), 2), "req_per_min": round(n / max(w / 60, 1), 2)}
+
+def _recommend_latency(window_sec: float = 3600.0) -> dict:
+    """
+    Latency of the /recommend path specifically, for the policy gate.
+
+    _record() is called from the recommend handlers only, so this ring buffer is
+    already route-scoped. The gate previously substituted p50 for p95 on the
+    theory that the buffer mixed in the slower /page route; it does not, and the
+    substitution meant the p95 SLO was never actually enforced. The gate now
+    reads p95 here, and treats a buffer with too few samples as inconclusive
+    rather than passing.
+    """
+    st = _stats(window_sec)
+    return {"n": st["n"], "p50_ms": st["p50_ms"],
+            "p95_ms": st["p95_ms"], "p99_ms": st["p99_ms"],
+            "window_sec": window_sec, "route": "/recommend"}
+
+
+def _log_interaction(user_id: int, item_id: int, event: str,
+                     dwell_seconds: float = 0.0) -> None:
+    """
+    Single write path for user feedback, shared by REST /feedback and the
+    GraphQL recordFeedback mutation, so both land in the same event log that
+    the reward model and offline RL training read.
+    """
+    payload = {"type": "feedback", "request_id": str(uuid.uuid4()),
+               "ts": time.time(), "user_id": int(user_id),
+               "item_id": int(item_id), "event": event,
+               "dwell_seconds": float(dwell_seconds)}
+    _log(payload)
+    try:
+        KAFKA_BRIDGE.send_feedback(int(user_id), int(item_id), event)
+    except Exception:
+        pass
+    try:
+        EVENT_LOGGER.log(payload)
+    except Exception:
+        pass
+
 
 # ── Admin auth ─────────────────────────────────────────────────────────────────
 def _require_admin(x_admin_token: Optional[str] = Header(default=None)):
@@ -534,6 +574,15 @@ class LoadedBundle:
         self.loaded = False
         self.item_factors: dict = {}
         self.user_factors: dict = {}
+        self.baselines: dict = {}
+        self.bootstrap: dict = {}
+        self.slices: dict = {}
+        self.serving_features: dict = {}
+        self.retrieval_cfg: dict = {}
+        self.ranker_cfg: dict = {}
+        self.caveats: list = []
+        self.model_version: str = ""
+        self.dataset: dict = {}
 
 _bundle = LoadedBundle()
 
@@ -546,10 +595,19 @@ def _try_load_bundle():
             _bundle.metrics            = payload.get("metrics", {})
             _bundle.feature_importance = payload.get("feature_importance", {})
             _bundle.feature_cols       = payload.get("feature_cols", [])
+            _bundle.baselines          = payload.get("baselines", {})
+            _bundle.bootstrap          = payload.get("bootstrap", {})
+            _bundle.slices             = payload.get("slices", {})
+            _bundle.retrieval_cfg      = payload.get("retrieval", {})
+            _bundle.ranker_cfg         = payload.get("ranker", {})
+            _bundle.caveats            = payload.get("caveats", [])
+            _bundle.model_version      = payload.get("model_version", "")
+            _bundle.dataset            = payload.get("dataset", {})
         except Exception:
             pass
     for name, attr in [("als_model.pkl","als"), ("ranker.pkl","ranker"),
-                        ("item_factors.pkl","item_factors"), ("user_factors.pkl","user_factors")]:
+                        ("item_factors.pkl","item_factors"), ("user_factors.pkl","user_factors"),
+                        ("serving_features.pkl","serving_features")]:
         try:
             with open(_BUNDLE / name, "rb") as f:
                 setattr(_bundle, attr, pickle.load(f))
@@ -574,7 +632,8 @@ def _try_load_bundle():
     _bundle.loaded = bool(_bundle.movies or _bundle.als or _bundle.ranker or payload)
     print(f"  Bundle loaded | ALS={'yes' if _bundle.als else 'no'} "
           f"| Ranker={'yes' if _bundle.ranker else 'no'} | Movies={len(_bundle.movies)} "
-          f"| ItemFactors={len(_bundle.item_factors)}")
+          f"| ItemFactors={len(_bundle.item_factors)} "
+          f"| ServingFeatures={len((_bundle.serving_features or {}).get('item_features', {}))}")
 
 _try_load_bundle()
 
@@ -959,30 +1018,56 @@ def _finalize_recs(
     user_genres_set = set(ug)
     ctx_features = ctx_features or [0.0] * 7
 
-    # Apply ranker with extended feature vector (6 original + 7 context)
-    if _bundle.ranker is not None:
+    # ── Stage 2: LambdaRank rerank ────────────────────────────────────────────
+    # Builds the vector through ranker_features.build_row, the same definition
+    # scripts/train_ranker.py trains on, and scores with the LightGBM Booster.
+    #
+    # This replaces a block that constructed a differently-shaped vector and
+    # called predict_proba() on a Booster inside a bare except — so the ranker
+    # silently never ran, and als_score / ranker_score / score were identical.
+    _rank_applied = False
+    if _bundle.ranker is not None and _bundle.serving_features:
         try:
+            from recsys.serving.ranker_features import build_row
+            sf    = _bundle.serving_features
+            if_   = sf.get("item_features", {})
+            iyear = sf.get("item_year", {})
+            uf    = (sf.get("user_features", {}) or {}).get(int(uid))
+            ugsm  = sf.get("user_genre_stats", {})
+            utop  = set((sf.get("user_top_genres", {}) or {}).get(int(uid), []))
+
+            n_cand = len(candidates)
             X = []
-            for item in candidates:
-                base_feats = [
-                    float(item.get("als_score", 0.5)),
-                    float(item.get("u_avg", 3.5)),
-                    float(item.get("u_cnt", 50)),
-                    float(item.get("popularity", 50)),
-                    float(item.get("avg_rating", 3.5)),
-                    float(item.get("year", 2015)),
-                    float(item.get("primary_genre", "") in user_genres_set),
-                    float(item.get("runtime_min", 100)),
-                    float(item.get("fused_score", 0.5)),
-                ]
-                # ADDITION 5: append context features
-                X.append(base_feats + ctx_features)
-            scores = _bundle.ranker.predict_proba(np.array(X, dtype=np.float32))[:, 1]
-            for item, score in zip(candidates, scores):
-                item["ranker_score"] = round(float(score), 4)
+            for pos, item in enumerate(candidates):
+                iid   = int(item.get("item_id", 0))
+                genre = item.get("primary_genre", "?")
+                aff, shr = ugsm.get(f"{int(uid)}|{genre}", (0.0, 0.0))
+                feats = dict(if_.get(iid, {}))
+                feats["year"] = iyear.get(iid, item.get("year") or 0)
+                X.append(build_row(
+                    als_score      = float(item.get("als_score", 0.0)),
+                    als_rank_norm  = pos / max(n_cand - 1, 1),
+                    item_f         = feats,
+                    user_f         = uf,
+                    genre_affinity = float(aff),
+                    genre_share    = float(shr),
+                    genre_match    = int(genre in utop),
+                ))
+            scores = _bundle.ranker.predict(np.asarray(X, dtype=np.float64))
+            for item, sc in zip(candidates, scores):
+                item["ranker_score"] = round(float(sc), 6)
                 item["score"]        = item["ranker_score"]
-        except Exception:
-            pass
+            _rank_applied = True
+        except Exception as _rank_exc:
+            # Loud, not silent. A ranker that fails to score is a served
+            # regression, and the previous `pass` is exactly why nobody noticed.
+            print(f"  [Ranker] FAILED to score {len(candidates)} candidates "
+                  f"for user {uid}: {type(_rank_exc).__name__}: {_rank_exc}")
+            RANKER_FAILURES.append(time.time())
+
+    for item in candidates:
+        item.setdefault("ranker_score", item.get("score", 0.0))
+        item["stage2_applied"] = _rank_applied
 
     candidates.sort(key=lambda x: -x.get("ranker_score", x.get("score", 0.5)))
 
@@ -1148,40 +1233,64 @@ def _log_impressions(uid: int, items: list, features_snapshot_id: str,
         except Exception:
             pass
 
-# ── Static metrics ─────────────────────────────────────────────────────────────
-def _live_metrics():
+# ── Measured metrics ───────────────────────────────────────────────────────────
+# Every number below comes from backend/artifacts/bundle/metrics.json, written by
+# scripts/evaluate.py against the held-out test split. There are deliberately no
+# fallback literals here: if the bundle is missing, the API reports that it is
+# missing rather than returning a plausible-looking number. An unmeasured system
+# that looks measured is worse than one that admits it has no metrics.
+
+class MetricsUnavailable(RuntimeError):
+    pass
+
+
+def _live_metrics() -> dict:
     m = _bundle.metrics or {}
+    if not m.get("ndcg_at_10"):
+        return {
+            "status": "unavailable",
+            "reason": "no trained bundle — artifacts/bundle/metrics.json is absent or empty",
+            "remedy": ("python3 scripts/prepare_data.py && python3 scripts/train_als.py "
+                       "&& python3 scripts/train_ranker.py && python3 scripts/evaluate.py "
+                       "&& python3 scripts/build_bundle.py"),
+        }
     return {
-        "ndcg_at_10":             m.get("ndcg_at_10",           0.1409),
-        "precision_at_10":        m.get("precision_at_10",      0.0644),
-        "recall_at_50":           m.get("recall_at_50",         0.1637),
-        "diversity_score":        m.get("diversity_score",      0.6923),
-        "intra_list_similarity":  m.get("intra_list_similarity", 0.2341),
-        "long_term_satisfaction": m.get("long_term_satisfaction", 0.5812),
-        "ranker_auc":             m.get("ranker_auc",           0.8124),
-        "ranker_ap":              m.get("ranker_ap",            0.4356),
-        "n_users_evaluated":      m.get("n_users_evaluated",    3978),
-        "ndcg10_lift_vs_als":     0.1010,
-        "ndcg10_lift_vs_co":      0.1047,
-        "caveats": [
-            "Trained on ML-1M data — see pipeline metrics for real numbers.",
-            "LTS is approximated via watch-completion proxy, not A/B holdout.",
-        ],
+        "status":                 "measured",
+        "ndcg_at_10":             m["ndcg_at_10"],
+        "ndcg_at_10_als_only":    m.get("ndcg_at_10_als"),
+        "ndcg_lift_pct_vs_als":   m.get("ndcg_lift_pct"),
+        "mrr_at_10":              m.get("mrr_at_10"),
+        "recall_at_10":           m.get("recall_at_10"),
+        "ips_ndcg_at_10":         m.get("ips_ndcg_at_10"),
+        "diversity_score":        m.get("diversity_score"),
+        "coverage":               m.get("coverage"),
+        "candidate_recall_at_200":m.get("candidate_recall_at_200"),
+        "best_baseline":          m.get("best_baseline"),
+        "best_baseline_ndcg":     m.get("best_baseline_ndcg"),
+        "split":                  "test",
+        "model_version":          _bundle.model_version,
+        "caveats":                _bundle.caveats,
     }
 
-_BASELINE = {
-    "popularity":    {"ndcg10": 0.0292, "mrr10": 0.0649, "recall10": 0.0122},
-    "cooccurrence":  {"ndcg10": 0.0362, "mrr10": 0.0781, "recall10": 0.0158},
-    "als_only":      {"ndcg10": 0.0399, "mrr10": 0.0885, "recall10": 0.0154},
-    "als_plus_lgbm": {"ndcg10": 0.1409, "mrr10": 0.2826, "recall10": 0.0644},
-}
+
+def _baselines() -> dict:
+    """Measured baselines, or an explicit empty result. Never invented."""
+    return _bundle.baselines or {}
+
 
 _MANIFEST = {
-    "bundle_id":        "rec-bundle-v6.0.0",
-    "version":          "6.0.0",
-    "als_model":        "als_rank64_reg0.05_iter20",
-    "ranker_model":     "gbm_ranker_v6_13feat_plus_7ctx",
-    "n_users": 2000, "n_items": 500,
+    "bundle_id":        _bundle.model_version or "no-bundle-loaded",
+    "version":          _bundle.model_version or "no-bundle-loaded",
+    "als_model":        (f"als_rank{_bundle.retrieval_cfg.get('factors')}"
+                         f"_reg{_bundle.retrieval_cfg.get('regularization')}"
+                         f"_iter{_bundle.retrieval_cfg.get('iterations')}"
+                         if _bundle.retrieval_cfg else "not_loaded"),
+    "ranker_model":     (f"lgbm_{_bundle.ranker_cfg.get('objective')}"
+                         f"_{_bundle.ranker_cfg.get('n_features')}feat"
+                         f"_iter{_bundle.ranker_cfg.get('best_iteration')}"
+                         if _bundle.ranker_cfg else "not_loaded"),
+    "n_users":          _bundle.dataset.get("n_users", 0),
+    "n_items":          len(_bundle.item_factors),
     "retrieval":        "two_tower_v1 -> four_retriever_fusion_v2",
     "exploration":      "linucb_bandit_v2",
     "slate_optimizer":  "slate_optimizer_v2_5rules",
@@ -1326,18 +1435,17 @@ async def startup_event():
     # ── Load skew baseline from disk into live singleton ──────────────────────
     if _SKEW_AVAILABLE:
         try:
+            # Load the TRAINING feature distribution only. The serving side of
+            # the PSI comparison fills from real /recommend traffic via
+            # SKEW_DETECTOR.record_serving_features().
+            #
+            # Startup used to seed 300 synthetic serving vectors drawn from Beta
+            # distributions and then print "PSI ready", so the drift number on
+            # the dashboard compared training statistics against generated noise
+            # and could never reflect an actual distribution shift.
             SKEW_DETECTOR._load_training_stats()
-            import numpy as _npS; _rS = _npS.random.default_rng(42)
-            for _ in range(300):
-                SKEW_DETECTOR.record_serving_features({
-                    "als_score": float(_rS.beta(2, 3)),
-                    "genre_match_cosine": float(_rS.beta(3, 2)),
-                    "item_popularity_log": float(_npS.clip(_rS.normal(3.5, 0.8), 0, 7)),
-                    "recency_score": float(_rS.beta(2, 2)),
-                    "user_activity_decile": float(_rS.uniform(1, 10)),
-                    "top_genre_alignment": float(_rS.beta(2, 2)),
-                })
-            print("[Startup] Skew baseline loaded — PSI ready")
+            print("[Startup] Skew baseline loaded — PSI will report once real "
+                  "serving traffic has accumulated")
         except Exception as _eS:
             print(f"[Startup] Skew load: {_eS}")
 
@@ -3125,11 +3233,16 @@ def metrics_latency(window_sec: float = Query(3600, ge=60)): return _stats(windo
 def metrics_pipeline():
     _try_load_bundle()
     live = _live_metrics()
-    return {"live": live, "baselines": _BASELINE,
-            "lift_vs_als": round(live["ndcg_at_10"] - 0.0399, 4),
-            "lift_vs_co":  round(live["ndcg_at_10"] - 0.0362, 4),
-            "model_version": _MANIFEST["version"],
-            "evaluated_at": datetime.utcnow().isoformat()}
+    if live.get("status") != "measured":
+        return {"live": live, "baselines": {}, "bootstrap": {}, "slices": {}}
+    base = _baselines()
+    lifts = {f"lift_vs_{name}": round(live["ndcg_at_10"] - b["ndcg@10"], 4)
+             for name, b in base.items() if name != "als_lambdarank"}
+    return {"live": live, "baselines": base, "bootstrap": _bundle.bootstrap,
+            "slices": _bundle.slices, "lifts_absolute": lifts,
+            "model_version": _bundle.model_version,
+            "evaluated_at": _bundle.metrics.get("generated_at")
+                            or datetime.utcnow().isoformat()}
 
 @app.get("/model/train_metrics")
 def model_train_metrics():
@@ -3605,15 +3718,52 @@ def rl_end_session(user_id: int):
 
 @app.post("/rl/train/offline", tags=["rl"])
 def rl_train_offline(body: _RLOfflineBody):
+    """
+    Warm-start the REINFORCE policy from LOGGED interactions.
+
+    This endpoint used to build its own training set with
+    `reward = rng.uniform(0.0, 3.0)`, drawn independently of the slate, and gave
+    every user identical activity. The reward carried no information about the
+    ordering, so the policy gradient was fitting noise, and two of the eight
+    state features were constant across every example. The resulting
+    "700 REINFORCE updates" was a number describing work done on random data.
+
+    It now reads artifacts/bundle/rl_sessions.jsonl, where each reward is the
+    user's own held-out rating of that item (scripts/build_rl_dataset.py). If
+    that file is absent it returns an error rather than manufacturing data.
+    """
+    path = _BUNDLE / "rl_sessions.jsonl"
+    if not path.exists():
+        return {"trained": False,
+                "error": f"no offline RL dataset at {path}",
+                "remedy": "python3 scripts/build_rl_dataset.py"}
+
+    sessions, activities = [], {}
+    limit = max(1, int(getattr(body, "n_sessions", 0) or 0)) or None
+    with open(path) as fh:
+        for line in fh:
+            rec = json.loads(line)
+            uid = int(rec["user_id"])
+            activities[uid] = rec.get("activity", {})
+            sessions.append({"user_id": uid, "slates": rec["slates"]})
+            if limit and len(sessions) >= limit:
+                break
+
+    if not sessions:
+        return {"trained": False, "error": "offline RL dataset is empty"}
+
     try:
-        import random; rng = random.Random(42); item_ids = list(CATALOG.keys())
-        sessions = [{"user_id": rng.randint(1, 1000),
-                     "slates": [{"items": [dict(CATALOG[iid]) for iid in rng.sample(item_ids, min(10, len(item_ids)))],
-                                 "order": list(range(10)), "reward": rng.uniform(0.0, 3.0)}]}
-                    for _ in range(body.n_sessions)]
-        result = RL_AGENT.train_offline(sessions, {i: {"n_ratings": 50, "avg_rating": 3.5} for i in range(1001)}, n_epochs=body.n_epochs)
-        return {"trained": True, "n_sessions": body.n_sessions, **result}
-    except Exception as e: return {"error": str(e)}
+        result = RL_AGENT.train_offline(sessions, activities,
+                                        n_epochs=int(body.n_epochs))
+    except Exception as exc:
+        return {"trained": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    stats_path = _BUNDLE / "rl_dataset_stats.json"
+    dataset_stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+    return {"trained": True, "n_sessions": len(sessions),
+            "data_source": "logged interactions (MovieLens held-out ratings)",
+            "dataset": dataset_stats, **result}
+
 
 # ══ DIFFUSION POSTER GENERATION ══════════════════════════════════════════════
 
@@ -3825,3 +3975,24 @@ def ml_extensions_status():
             "GET  /ml/semi_supervised/summary":       "Semi-supervised propagation stats",
         }
     }
+
+
+# ══ GraphQL ═══════════════════════════════════════════════════════════════════
+# Typed schema over the same serving singletons the REST API uses, for external
+# consumers that want narrow projections over a metered callout boundary — the
+# Salesforce Apex integration in salesforce/ is the first of them.
+try:
+    from recsys.serving.graphql_api import graphql_router as _gql_router
+    app.include_router(_gql_router, prefix="", tags=["graphql"])
+    _GRAPHQL_AVAILABLE = True
+    print("  [GraphQL] schema mounted at /graphql")
+except Exception as _gql_exc:      # strawberry not installed
+    _GRAPHQL_AVAILABLE = False
+    print(f"  [GraphQL] not mounted: {_gql_exc}")
+
+
+@app.get("/graphql/health", tags=["graphql"])
+def graphql_health():
+    return {"available": _GRAPHQL_AVAILABLE,
+            "endpoint": "/graphql" if _GRAPHQL_AVAILABLE else None,
+            "note": "POST a query, or open /graphql in a browser for GraphiQL"}

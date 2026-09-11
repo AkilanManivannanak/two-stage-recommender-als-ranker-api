@@ -1,0 +1,14 @@
+{
+  "factors": 64,
+  "regularization": 0.05,
+  "alpha": 40.0,
+  "iterations": 20,
+  "n_users": 6040,
+  "n_items": 3667,
+  "nnz": 472129,
+  "candidate_recall@50_val": 0.2552,
+  "candidate_recall@200_val": 0.561,
+  "candidate_recall@50_test": 0.201,
+  "candidate_recall@200_test": 0.4734,
+  "train_seconds": 7.6
+}

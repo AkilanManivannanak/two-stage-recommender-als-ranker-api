@@ -1,0 +1,113 @@
+{
+  "task": "next-genre prediction from a real ML-1M session prefix",
+  "n_classes": 18,
+  "genres": [
+    "Action",
+    "Adventure",
+    "Animation",
+    "Children's",
+    "Comedy",
+    "Crime",
+    "Documentary",
+    "Drama",
+    "Fantasy",
+    "Film-Noir",
+    "Horror",
+    "Musical",
+    "Mystery",
+    "Romance",
+    "Sci-Fi",
+    "Thriller",
+    "War",
+    "Western"
+  ],
+  "input_dim": 24,
+  "hidden_dim": 32,
+  "epochs": 10,
+  "best_epoch": 6,
+  "session_gap_s": 1800,
+  "n_sessions": 11729,
+  "n_train_sequences": 9225,
+  "n_val_sequences": 2504,
+  "split": "by user, 80/20 \u2014 no user appears in both",
+  "val_accuracy": 0.4485,
+  "val_loss": 1.6938,
+  "baseline_majority": 0.2907,
+  "baseline_persist_genre": 0.3802,
+  "beats_majority": true,
+  "beats_persist": true,
+  "history": [
+    {
+      "epoch": 1,
+      "train_acc": 0.4201,
+      "train_loss": 1.8061,
+      "val_acc": 0.4417,
+      "val_loss": 1.7556
+    },
+    {
+      "epoch": 2,
+      "train_acc": 0.4475,
+      "train_loss": 1.7219,
+      "val_acc": 0.4481,
+      "val_loss": 1.7202
+    },
+    {
+      "epoch": 3,
+      "train_acc": 0.4443,
+      "train_loss": 1.6956,
+      "val_acc": 0.4125,
+      "val_loss": 1.7764
+    },
+    {
+      "epoch": 4,
+      "train_acc": 0.4457,
+      "train_loss": 1.6837,
+      "val_acc": 0.4401,
+      "val_loss": 1.709
+    },
+    {
+      "epoch": 5,
+      "train_acc": 0.4515,
+      "train_loss": 1.669,
+      "val_acc": 0.4333,
+      "val_loss": 1.711
+    },
+    {
+      "epoch": 6,
+      "train_acc": 0.4541,
+      "train_loss": 1.659,
+      "val_acc": 0.4485,
+      "val_loss": 1.6938
+    },
+    {
+      "epoch": 7,
+      "train_acc": 0.453,
+      "train_loss": 1.6469,
+      "val_acc": 0.4393,
+      "val_loss": 1.7388
+    },
+    {
+      "epoch": 8,
+      "train_acc": 0.454,
+      "train_loss": 1.6421,
+      "val_acc": 0.4453,
+      "val_loss": 1.7022
+    },
+    {
+      "epoch": 9,
+      "train_acc": 0.4529,
+      "train_loss": 1.633,
+      "val_acc": 0.4425,
+      "val_loss": 1.6976
+    },
+    {
+      "epoch": 10,
+      "train_acc": 0.4624,
+      "train_loss": 1.6284,
+      "val_acc": 0.4365,
+      "val_loss": 1.7126
+    }
+  ],
+  "trained_at": "2026-09-10T20:06:06Z",
+  "train_seconds": 49.3
+}

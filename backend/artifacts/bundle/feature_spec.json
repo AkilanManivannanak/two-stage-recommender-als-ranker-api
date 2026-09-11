@@ -1,0 +1,40 @@
+{
+  "feature_cols": [
+    "als_score",
+    "als_rank_norm",
+    "item_pop_log",
+    "item_pos_rate",
+    "item_avg_rating",
+    "item_recency_days",
+    "item_cnt_30d_log",
+    "item_year",
+    "user_cnt_log",
+    "user_avg_rating",
+    "user_pos_rate",
+    "user_tenure_days",
+    "genre_match",
+    "user_genre_affinity",
+    "genre_share"
+  ],
+  "n_features": 15,
+  "objective": "lambdarank",
+  "metric": "ndcg@10",
+  "best_iteration": 23,
+  "gain_importance": {
+    "als_score": 9209.5,
+    "als_rank_norm": 4468.9,
+    "item_pop_log": 4497.3,
+    "item_pos_rate": 2103.6,
+    "item_avg_rating": 1543.3,
+    "item_recency_days": 1598.1,
+    "item_cnt_30d_log": 157.9,
+    "item_year": 1793.9,
+    "user_cnt_log": 2742.4,
+    "user_avg_rating": 1414.6,
+    "user_pos_rate": 1919.7,
+    "user_tenure_days": 2509.6,
+    "genre_match": 49.5,
+    "user_genre_affinity": 2032.0,
+    "genre_share": 2763.7
+  }
+}

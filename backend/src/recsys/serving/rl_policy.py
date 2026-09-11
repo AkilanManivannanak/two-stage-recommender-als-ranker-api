@@ -403,10 +403,19 @@ class REINFORCEAgent:
     ) -> dict:
         """
         Warm-start the policy from offline logged data before live serving.
-        This is imitation learning (behavioral cloning) from logged interactions:
-        the REINFORCE agent learns to replicate high-reward orderings observed
-        in historical session data, following an off-policy behavioral cloning
-        objective before online fine-tuning begins.
+
+        Naming, precisely: this is REINFORCE with Monte-Carlo returns and a
+        baseline, run over logged trajectories. It is NOT behavioural cloning
+        (which would maximise the likelihood of the logged action directly,
+        with no reward term), and it is not a corrected off-policy estimator
+        either — there is no importance weight here, so the update is biased by
+        the gap between the logging policy and the current one. The docstring
+        previously claimed both labels; neither was accurate.
+
+        That bias is acceptable for a warm start, whose only job is to leave the
+        policy somewhere better than random before online learning begins. It
+        would not be acceptable as an evaluation, which is what ope_eval.py and
+        its IPS / doubly-robust estimators are for.
 
         logged_sessions: list of {user_id, slates: [{items, reward}]}
         user_activities: {user_id: {n_ratings, avg_rating, n_genres}}

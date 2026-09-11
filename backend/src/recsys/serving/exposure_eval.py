@@ -84,75 +84,17 @@ class ImpressionStore:
         return pos
 
 
-def ips_ndcg_at_k(
-    recommendations: list[int],
-    shown_items:     set[int],
-    positive_items:  set[int],
-    propensities:    dict[int, float],
-    k:               int = 10,
-) -> float:
+def ips_ndcg_at_k(*args, **kwargs):
     """
-    IPS-corrected NDCG@k.
-    Only evaluates on items that were shown (exposure-corrected).
-    Weights each hit by 1/P(shown) to correct for popularity bias.
+    Delegates to ope_eval.ips_ndcg_at_k.
 
-    Naive NDCG:  assumes all non-interacted items are irrelevant
-    IPS-NDCG:    weights by inverse propensity of being shown
-
-    Returns 0.0 if no items were shown (cannot evaluate).
+    This module used to carry a second, independently-written implementation of
+    IPS-NDCG. Two copies of an estimator is two chances to be subtly wrong and
+    no way to tell which number a given caller produced, so this is now a thin
+    forwarder to the one in ope_eval.
     """
-    # Filter to shown items only
-    shown_recs  = [r for r in recommendations[:k] if r in shown_items]
-    shown_rel   = positive_items & shown_items
-
-    if not shown_recs or not shown_rel:
-        return 0.0
-
-    dcg  = sum(
-        (1.0 / propensities.get(r, 0.1)) / np.log2(i + 2)
-        for i, r in enumerate(shown_recs)
-        if r in positive_items
-    )
-    # Ideal: sort shown_rel by propensity-weighted gain
-    ideal_gains = sorted(
-        [1.0 / propensities.get(r, 0.1) for r in shown_rel],
-        reverse=True
-    )
-    idcg = sum(g / np.log2(i + 2) for i, g in enumerate(ideal_gains[:k]))
-
-    return float(dcg / idcg) if idcg > 0 else 0.0
-
-
-def point_in_time_check(
-    feature_timestamp: float,
-    interaction_timestamp: float,
-    max_lag_seconds: float = 3600.0,
-) -> bool:
-    """
-    Check that features were computed BEFORE the interaction.
-    Training-serving skew happens when future information leaks into features.
-    Returns True if the feature is temporally valid.
-    """
-    if feature_timestamp > interaction_timestamp:
-        return False   # future leakage
-    lag = interaction_timestamp - feature_timestamp
-    if lag > max_lag_seconds:
-        return False   # features too stale
-    return True
-
-
-def delayed_label_window(
-    recommendation_ts: float,
-    evaluation_ts:     float,
-    window_hours:      float = 24.0,
-) -> bool:
-    """
-    Check if we are within the delayed-label observation window.
-    Interactions can arrive up to `window_hours` after recommendation.
-    Evaluating too early misses positive labels and understates quality.
-    """
-    elapsed = (evaluation_ts - recommendation_ts) / 3600.0
-    return elapsed >= window_hours
+    from recsys.serving.ope_eval import ips_ndcg_at_k as _canonical
+    return _canonical(*args, **kwargs)
 
 
 def slice_ndcg(
