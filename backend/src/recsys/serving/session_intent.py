@@ -47,6 +47,8 @@ from collections import Counter
 
 import numpy as np
 
+_BUNDLE_DIR = Path(__file__).resolve().parents[3] / "artifacts" / "bundle"
+
 INTENT_CATEGORIES  = ["binge", "discovery", "background", "social", "mood_lift", "unknown"]
 N_INTENTS          = len(INTENT_CATEGORIES)
 ABANDON_THRESH_S   = 45.0
@@ -318,9 +320,11 @@ class SessionIntent:
     blend_weight:      float
     session_features:  dict[str, float]
     honest_note:       str = (
-        "Single-cell GRU trained on ML-1M proxy sessions via cross-entropy. "
-        "Not FM-Intent: no watch-time, no multi-task, no production session logs. "
-        "GRU hidden_dim=16, trained for 30 epochs on 3000 synthetic session sequences."
+        "The intent category is an UNSUPERVISED heuristic over session "
+        "statistics, not a trained classifier. MovieLens carries no "
+        "session-intent labels, so no accuracy is claimed for it. The trained "
+        "component is a next-genre GRU (scripts/train_session_gru.py), whose "
+        "held-out accuracy is reported separately by training_metrics()."
     )
 
 
@@ -331,25 +335,76 @@ class SessionIntentModel:
     """
 
     def __init__(self):
-        self._cell:   GRUCell | None           = None
-        self._clf:    SessionClassifier | None = None
+        self._cell:   GRUCell | None           = GRUCell()
+        self._clf:    SessionClassifier | None = SessionClassifier()
+        self._gru = None
+        self._head = None
+        self._genres: list[str] = []
         self._trained = False
         self._train_metrics: dict = {}
         self._init()
 
     def _init(self) -> None:
-        """Train on startup (fast: <1s for 3000 sessions × 30 epochs)."""
+        """
+        Load the trained next-genre GRU from the bundle.
+
+        This used to call train_session_model(), which fabricated 3,000 sessions
+        from per-intent templates, used the template index as the label, trained
+        with a broken backward pass, and printed accuracy measured on the very
+        sequences it had just fit — 0.927, a number that meant nothing and was
+        reported as a headline metric.
+
+        The model is now trained offline by scripts/train_session_gru.py on real
+        ML-1M sessions with a by-user split, and loaded here. If the artifact is
+        absent, this reports untrained rather than manufacturing a model.
+        """
         try:
-            self._cell, self._clf, self._train_metrics = train_session_model()
+            import pickle
+            from recsys.serving.session_gru import TrainableGRU, LinearHead
+            path = _BUNDLE_DIR / "session_gru.pkl"
+            if not path.exists():
+                self._trained = False
+                self._train_metrics = {
+                    "status": "untrained",
+                    "reason": f"{path} not found",
+                    "remedy": "python3 scripts/train_session_gru.py",
+                }
+                print("  [SessionIntent] no trained GRU in the bundle — "
+                      "next-genre prediction disabled "
+                      "(run scripts/train_session_gru.py)")
+                return
+            with open(path, "rb") as f:
+                blob = pickle.load(f)
+            self._gru    = TrainableGRU.from_state(blob["gru"])
+            self._head   = LinearHead.from_state(blob["head"])
+            self._genres = blob["genres"]
+            self._train_metrics = blob["metrics"]
             self._trained = True
-            acc = self._train_metrics.get("final_acc", 0)
-            print(f"  [SessionIntent] GRU trained: acc={acc:.3f} "
-                  f"loss={self._train_metrics.get('final_loss',0):.4f}")
+            m = self._train_metrics
+            print(f"  [SessionIntent] next-genre GRU loaded: "
+                  f"held-out acc={m['val_accuracy']:.4f} "
+                  f"(majority {m['baseline_majority']:.4f}, "
+                  f"persist {m['baseline_persist_genre']:.4f}) "
+                  f"on {m['n_val_sequences']:,} sequences from held-out users")
         except Exception as e:
-            print(f"  [SessionIntent] Training failed ({e}), using fallback weights")
-            self._cell    = GRUCell()
-            self._clf     = SessionClassifier()
             self._trained = False
+            self._train_metrics = {"status": "load_failed", "reason": str(e)}
+            print(f"  [SessionIntent] failed to load trained GRU: {e}")
+
+    def predict_next_genre(self, event_features: list) -> dict:
+        """Trained head. Returns an explicit not-available result when untrained."""
+        if not self._trained or not event_features:
+            return {"available": False,
+                    "reason": self._train_metrics.get("reason", "no session events")}
+        from recsys.serving.session_gru import softmax
+        h = self._gru.encode([__import__("numpy").asarray(x, dtype=float)
+                              for x in event_features])
+        probs = softmax(self._head.logits(h))
+        order = probs.argsort()[::-1][:3]
+        return {"available": True,
+                "top_genres": [{"genre": self._genres[i],
+                                "p": round(float(probs[i]), 4)} for i in order],
+                "held_out_accuracy": self._train_metrics.get("val_accuracy")}
 
     def encode(self, events: list[SessionEvent],
                user_long_term_genres: list[str]) -> SessionIntent:
@@ -458,7 +513,16 @@ class SessionIntentModel:
         return events
 
     def training_metrics(self) -> dict:
-        return {"trained": self._trained, **self._train_metrics}
+        """
+        Metrics for the TRAINED component only (next-genre prediction).
+
+        The intent category this class also returns is an unsupervised heuristic
+        with no ground truth in MovieLens; it deliberately has no accuracy here.
+        """
+        return {"trained": self._trained,
+                "trained_task": "next-genre prediction",
+                "intent_category_is_heuristic": True,
+                **self._train_metrics}
 
 
 _SESSION_MODEL = SessionIntentModel()

@@ -69,14 +69,24 @@ import numpy as np
 @dataclass
 class GateCheck:
     name:        str
-    value:       float
-    threshold:   float
+    value:       Optional[float]
+    threshold:   Optional[float]
     comparison:  str   # "gt", "lt", "gte", "lte", "eq"
     passed:      bool = False
     delta:       Optional[float] = None   # vs incumbent
     critical:    bool = True              # if True, failure blocks deploy
 
+    inconclusive: bool = False
+
     def __post_init__(self):
+        # A check whose input was never measured FAILS CLOSED. The previous
+        # version defaulted missing inputs to a passing literal, which is how a
+        # gate with 27 checks could pass on a system that had measured none of
+        # them.
+        if self.value is None:
+            self.inconclusive = True
+            self.passed = False
+            return
         if self.comparison == "gt":
             self.passed = self.value > self.threshold
         elif self.comparison == "gte":
@@ -91,8 +101,9 @@ class GateCheck:
     def to_dict(self) -> dict:
         return {
             "name":      self.name,
-            "value":     round(self.value, 4),
-            "threshold": round(self.threshold, 4),
+            "value":     None if self.value is None else round(self.value, 4),
+            "threshold": None if self.threshold is None else round(self.threshold, 4),
+            "inconclusive": self.inconclusive,
             "comparison": self.comparison,
             "passed":    self.passed,
             "delta":     round(self.delta, 4) if self.delta is not None else None,
@@ -119,7 +130,9 @@ class GateResult:
             "checks":          [c.to_dict() for c in self.checks],
             "n_checks":        len(self.checks),
             "n_passed":        sum(1 for c in self.checks if c.passed),
-            "n_failed":        sum(1 for c in self.checks if not c.passed),
+            "n_failed":        sum(1 for c in self.checks if not c.passed
+                                   and not c.inconclusive),
+            "n_inconclusive":  sum(1 for c in self.checks if c.inconclusive),
         }
 
 
@@ -357,9 +370,16 @@ class PolicyGate:
     def gate_from_pipeline_metrics(self, pipeline_metrics: dict,
                                    pipeline_latency: dict = None) -> GateResult:
         """
-        Convenience: build gate input from pipeline metrics dict
-        (as written by serve_payload.json) + latency stats.
+        DEPRECATED — retained only so older Metaflow flows still import.
+
+        This path assigned thirteen gate inputs to literals chosen to pass their
+        own thresholds and substituted p50 for the p95 SLO. Use
+        gate_from_measured_metrics(), which fails closed on anything unmeasured.
         """
+        import warnings as _w
+        _w.warn("gate_from_pipeline_metrics is deprecated and does not measure "
+                "its inputs; use gate_from_measured_metrics",
+                DeprecationWarning, stacklevel=2)
         m = {}
         # Map pipeline metrics to gate inputs
         m["ndcg_at_10"]         = pipeline_metrics.get("ndcg_at_10", 0.0)
@@ -400,6 +420,140 @@ class PolicyGate:
             m["p99_ms"] = 0.0
 
         return self.run(m)
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MEASURED GATE
+#
+#  Every threshold below is either (a) relative to a baseline measured in the
+#  same evaluation run, or (b) an absolute floor set BELOW the current measured
+#  value, so it guards against regression rather than asserting an achievement.
+#
+#  What is deliberately absent: any assignment of a gate input to a literal. The
+#  previous gate_from_pipeline_metrics() set thirteen of its twenty-seven inputs
+#  to constants chosen to sit just inside their own thresholds (freshness 0.998
+#  against >= 0.995, fused recall 0.87 against > 0.85, and so on) and substituted
+#  p50 for p95. Those checks reported PASS on a system that had measured nothing.
+#  Here, an unmeasured input is inconclusive and an inconclusive critical check
+#  blocks the deploy.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Regression floors. Set from the 2026-09-10 measured run (NDCG@10 0.0516,
+# diversity 0.421, coverage 0.355, candidate recall@200 0.473) with headroom, so
+# a model that degrades trips the gate but the current model is not gamed past.
+REGRESSION_FLOORS = {
+    "diversity_score":          0.35,
+    "coverage":                 0.25,
+    "candidate_recall_at_200":  0.40,
+    "ips_ndcg_at_10":           0.015,
+}
+LATENCY_SLO_P95_MS   = 50.0
+LATENCY_SLO_P99_MS   = 80.0
+MIN_LATENCY_SAMPLES  = 100     # below this the latency check is inconclusive
+MAX_NDCG_REGRESSION  = -0.02   # vs incumbent, relative
+
+
+def _measured_gate(self, m: dict, latency: dict | None = None) -> GateResult:
+    """
+    Build the gate from measured metrics only.
+
+    m: the `headline` block of artifacts/bundle/metrics.json, optionally with
+       "ndcg_at_10_incumbent" set by the caller.
+    latency: {"p95_ms","p99_ms","n"} from the serving ring buffer, filtered to
+       the /recommend route. Omit it and the latency gates are inconclusive
+       rather than passing.
+    """
+    checks: list[GateCheck] = []
+    g = m.get
+
+    # ── Quality: the system must beat the best baseline measured in the same run
+    checks.append(GateCheck(
+        "ndcg_at_10_beats_best_baseline",
+        g("ndcg_at_10"), g("best_baseline_ndcg"), "gt", critical=True))
+
+    # ── Quality: and must beat its own retrieval stage
+    checks.append(GateCheck(
+        "ndcg_at_10_beats_retrieval_only",
+        g("ndcg_at_10"), g("ndcg_at_10_als"), "gt", critical=True))
+
+    # ── Quality: no regression against the promoted incumbent
+    inc = g("ndcg_at_10_incumbent")
+    if inc:
+        rel = (g("ndcg_at_10") - inc) / inc if g("ndcg_at_10") is not None else None
+        c = GateCheck("ndcg_at_10_no_regression_vs_incumbent",
+                      rel, MAX_NDCG_REGRESSION, "gte", critical=True)
+        c.delta = rel
+        checks.append(c)
+
+    # ── Exposure-corrected quality: guards against a head-item collapse that
+    #    plain NDCG would not catch.
+    checks.append(GateCheck(
+        "ips_ndcg_at_10_floor",
+        g("ips_ndcg_at_10"), REGRESSION_FLOORS["ips_ndcg_at_10"], "gt", critical=True))
+
+    # ── Retrieval: the ranker cannot rank what retrieval never returned
+    checks.append(GateCheck(
+        "candidate_recall_at_200_floor",
+        g("candidate_recall_at_200"),
+        REGRESSION_FLOORS["candidate_recall_at_200"], "gt", critical=True))
+
+    # ── Slate composition
+    checks.append(GateCheck(
+        "diversity_score_floor",
+        g("diversity_score"), REGRESSION_FLOORS["diversity_score"], "gt", critical=True))
+    checks.append(GateCheck(
+        "catalog_coverage_floor",
+        g("coverage"), REGRESSION_FLOORS["coverage"], "gt", critical=False))
+
+    # ── Serving latency. Measured p95, on the /recommend route, or nothing.
+    lat = latency or {}
+    n_samples = lat.get("n")
+    if n_samples is not None and n_samples >= MIN_LATENCY_SAMPLES:
+        checks.append(GateCheck("p95_ms_recommend", lat.get("p95_ms"),
+                                LATENCY_SLO_P95_MS, "lt", critical=True))
+        checks.append(GateCheck("p99_ms_recommend", lat.get("p99_ms"),
+                                LATENCY_SLO_P99_MS, "lt", critical=False))
+    else:
+        checks.append(GateCheck("p95_ms_recommend", None,
+                                LATENCY_SLO_P95_MS, "lt", critical=True))
+        checks.append(GateCheck("p99_ms_recommend", None,
+                                LATENCY_SLO_P99_MS, "lt", critical=False))
+
+    # ── Slice regression: a global win that hides a cold-user loss is a fail.
+    for name, sl in (m.get("slices") or {}).items():
+        d = sl.get("delta")
+        c = GateCheck(f"slice_no_regression_{name}", d, MAX_NDCG_REGRESSION,
+                      "gte", critical=False)
+        c.delta = d
+        checks.append(c)
+
+    blocking = [c.name for c in checks if c.critical and not c.passed]
+    warnings = [c.name for c in checks if not c.critical and not c.passed]
+    incon    = [c.name for c in checks if c.inconclusive]
+    passed   = not blocking
+
+    n_ran = len(checks) - len(incon)
+    if passed and not warnings:
+        rec = "DEPLOY"
+        summary = f"All {n_ran} measured checks passed. Safe to deploy."
+    elif passed:
+        rec = "REVIEW"
+        summary = (f"{n_ran} measured checks ran, criticals passed, "
+                   f"{len(warnings)} warning(s) need review: {warnings}")
+    else:
+        rec = "BLOCK"
+        blocked_by_missing = [n for n in blocking if n in incon]
+        summary = f"BLOCKED: {len(blocking)} critical gate(s) failed: {blocking}"
+        if blocked_by_missing:
+            summary += f" (of which unmeasured: {blocked_by_missing})"
+
+    return GateResult(gate_passed=passed, checks=checks, blocking_checks=blocking,
+                      warnings=warnings, recommendation=rec, summary=summary)
+
+
+PolicyGate.gate_from_measured_metrics = _measured_gate
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────

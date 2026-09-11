@@ -157,19 +157,44 @@ class CounterfactualEvaluator:
 
     def evaluate_policy(
         self,
-        policy_rankings: dict[int, list[int]],  # user_id → ranked item_ids
-        propensity_map:  dict[int, float],       # item_id → propensity
+        policy_rankings: dict[int, list[int]],  # user_id -> ranked item_ids
+        propensity_map:  dict[int, float],       # item_id -> propensity
         k:               int = 10,
         method:          str = "ips",            # "ips" | "dr"
+        reward_model:    Optional[callable] = None,
     ) -> dict:
         """
-        Estimate NDCG@k for a new policy without deploying it.
+        Estimate reward for a new policy from logs collected under an old one.
 
-        policy_rankings: what the new policy WOULD have shown
-        Returns metric estimates by user segment.
+        method="ips" — inverse propensity scoring. Unbiased if the propensities
+        are correct, but high variance when some were small.
+
+        method="dr"  — doubly robust. Adds a reward model as a control variate:
+
+            DR = rhat(new) + (1/p) * 1[logged == new] * (observed - rhat(logged))
+
+        Unbiased if EITHER the propensity model OR the reward model is right,
+        and lower variance than IPS whenever the reward model carries signal.
+
+        Previously this method accepted `method` and then ignored it: the body
+        only ever computed IPS and echoed the argument back in the result, while
+        doubly_robust_reward() sat in this module with no callers anywhere in
+        the repository. The README advertised doubly-robust evaluation on the
+        strength of that dead function.
+
+        reward_model: callable (user_id, item_id) -> predicted reward in [0, 1].
+        Required for method="dr". A DR estimate cannot be formed without one, so
+        this raises rather than silently degrading to IPS.
         """
-        user_rewards: dict[int, list[float]] = defaultdict(list)
-        user_ips_ndcg: dict[int, list[float]] = defaultdict(list)
+        if method not in ("ips", "dr"):
+            raise ValueError(f"method must be 'ips' or 'dr', got {method!r}")
+        if method == "dr" and reward_model is None:
+            raise ValueError(
+                "method='dr' requires reward_model; refusing to silently "
+                "compute IPS and label the result doubly-robust")
+
+        per_user_scores: dict[int, list[float]] = defaultdict(list)
+        n_matched = 0
 
         for log in self._logs:
             uid     = log.user_id
@@ -177,23 +202,62 @@ class CounterfactualEvaluator:
             if not ranking:
                 continue
 
-            # IPS: did new policy show the item the user clicked on?
-            if log.was_clicked and log.item_id in ranking[:k]:
-                pos     = ranking.index(log.item_id)
-                gain    = log.reward / math.log2(pos + 2)
-                ips_w   = min(1.0 / max(log.propensity, 0.01), 10.0)
-                user_ips_ndcg[uid].append(gain * ips_w)
+            in_slate = log.item_id in ranking[:k]
+            propensity = max(log.propensity, 1e-4)
+            if propensity_map:
+                propensity = max(propensity_map.get(log.item_id, propensity), 1e-4)
 
-        if not user_ips_ndcg:
-            return {"ips_ndcg_at_k": 0.0, "n_users": 0, "k": k}
+            if method == "ips":
+                # Only logged items the new policy would also have shown
+                # contribute; everything else has an indicator of zero.
+                if in_slate and log.was_clicked:
+                    pos   = ranking.index(log.item_id)
+                    gain  = log.reward / math.log2(pos + 2)
+                    ips_w = min(1.0 / propensity, 10.0)
+                    per_user_scores[uid].append(gain * ips_w)
+                    n_matched += 1
+                elif in_slate:
+                    per_user_scores[uid].append(0.0)
+            else:
+                # Doubly robust. The direct-method term applies to every logged
+                # record, so records the new policy would NOT have shown still
+                # contribute their model-predicted reward — which is the whole
+                # point of the control variate.
+                new_item = ranking[0] if ranking else log.item_id
+                dr = doubly_robust_reward(
+                    logged_action=log.item_id,
+                    new_action=(log.item_id if in_slate else new_item),
+                    observed_reward=log.reward,
+                    propensity=propensity,
+                    predicted_reward_logged=float(reward_model(uid, log.item_id)),
+                    predicted_reward_new=float(
+                        reward_model(uid, log.item_id if in_slate else new_item)),
+                )
+                if in_slate:
+                    pos = ranking.index(log.item_id)
+                    dr /= math.log2(pos + 2)     # position discount
+                    n_matched += 1
+                per_user_scores[uid].append(dr)
 
-        per_user = {uid: float(np.mean(vs)) for uid, vs in user_ips_ndcg.items()}
+        if not per_user_scores:
+            return {"estimate": 0.0, "n_users": 0, "k": k, "method": method,
+                    "n_matched": 0,
+                    "note": "no logged record overlapped the new policy's slates"}
+
+        per_user = {u: float(np.mean(v)) for u, v in per_user_scores.items()}
+        vals = np.array(list(per_user.values()))
         return {
-            "ips_ndcg_at_k":     float(np.mean(list(per_user.values()))),
-            "median_ips_ndcg":   float(np.median(list(per_user.values()))),
-            "n_users":           len(per_user),
-            "k":                 k,
-            "method":            method,
+            "estimate":       float(vals.mean()),
+            "median":         float(np.median(vals)),
+            "std":            float(vals.std()),
+            # A standard error makes the variance difference between IPS and DR
+            # visible, which is the reason to prefer DR in the first place.
+            "stderr":         float(vals.std() / max(np.sqrt(len(vals)), 1)),
+            "n_users":        len(per_user),
+            "n_logs":         len(self._logs),
+            "n_matched":      n_matched,
+            "k":              k,
+            "method":         method,
         }
 
 

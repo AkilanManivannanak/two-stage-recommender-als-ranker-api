@@ -25,16 +25,25 @@ def test_linucb_ucb_score():
     assert score > 0, "UCB score should be positive"
 
 def test_ddpm_schedule():
+    """
+    Exercise the project's OWN schedule.
+
+    This test used to define betas/alphas inline and assert that numpy's cumprod
+    satisfies an algebraic identity — it imported no project code, so it would
+    have passed with diffusion_poster.py deleted.
+    """
     import numpy as np
-    T = 1000
-    betas = np.linspace(1e-4, 0.02, T)
-    alphas = 1 - betas
-    alphas_cumprod = np.cumprod(alphas)
-    # Forward process variance preservation
+    import recsys.serving.diffusion_poster as dp
+
+    sched = dp.DDPMSchedule(T=1000)
+    acp = np.asarray(sched.alphas_cumprod)
+
+    assert acp.size == 1000, f"expected T=1000, got {acp.size}"
+    assert acp[0] < 1.0 and acp[-1] < acp[0], "schedule must decrease"
     t = 500
-    signal = np.sqrt(alphas_cumprod[t])
-    noise  = np.sqrt(1 - alphas_cumprod[t])
-    assert abs(signal**2 + noise**2 - 1.0) < 1e-5, "Variance not preserved"
+    signal, noise = np.sqrt(acp[t]), np.sqrt(1 - acp[t])
+    assert abs(signal**2 + noise**2 - 1.0) < 1e-5, \
+        "the project's forward process does not preserve variance"
 
 def test_reward_model_score():
     from recsys.serving.reward_model import score

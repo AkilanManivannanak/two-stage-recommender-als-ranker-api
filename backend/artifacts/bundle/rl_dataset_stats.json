@@ -1,0 +1,11 @@
+{
+  "source": "MovieLens-1M validation split, ALS candidate slates",
+  "n_sessions": 982,
+  "n_scored_items": 1299,
+  "slate_size": 10,
+  "mean_reward": 0.8411,
+  "reward_std": 0.3152,
+  "pct_positive": 0.7921,
+  "note": "Rewards come from each user's own held-out rating. Items the user never rated are excluded rather than given a default reward.",
+  "built_at": "2026-09-10T20:14:09Z"
+}
