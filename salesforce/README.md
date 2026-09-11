@@ -24,7 +24,7 @@ LWC on a record  ─┴─► CineWaveController         ─┴─► CineWaveGr
 | `CineWaveController.cls` | `@AuraEnabled` controller. Read is `cacheable`, feedback write deliberately is not. |
 | `CineWaveRecommendation.cls` | DTO. Keeps `alsScore` and `rankerScore` as separate fields. |
 | `CineWaveCalloutMock.cls` | Nine response modes, including every failure branch. |
-| `*Test.cls` | 24 test methods covering happy paths and all five failure modes. |
+| `*Test.cls` | 30 test methods covering happy paths and all five failure modes. |
 | `lwc/cineWaveRecommendations` | Lightning card. Shows both stage scores and labels metrics "offline". |
 
 ## Why GraphQL and not REST
@@ -38,27 +38,29 @@ can introspect beats a JSON blob it must parse defensively.
 
 ## Deploy to a Developer Edition org
 
-**1. Get an org** — sign up free at
-<https://developer.salesforce.com/signup> (Developer Edition, no expiry).
+One command, once the prerequisites are in place:
 
-**2. Install the CLI**
+```bash
+./scripts/deploy.sh https://your-tunnel-url.ngrok-free.app
+```
+
+It checks the API answers a GraphQL query, validates the source offline, writes
+the URL into the Named Credential, authorises the org, deploys, assigns the
+permission set, and runs the Apex tests.
+
+### Prerequisites
+
+**1. An org** — free Developer Edition, no expiry:
+<https://developer.salesforce.com/signup>
+
+**2. The CLI**
 
 ```bash
 npm install --global @salesforce/cli
 sf --version
 ```
 
-**3. Authorise the org**
-
-```bash
-cd salesforce
-sf org login web --alias cinewave-dev --set-default
-```
-
-**4. Point the Named Credential at a reachable CineWave**
-
-Apex callouts must reach a public HTTPS host — `localhost` will not work from
-Salesforce. Expose the local API first:
+**3. A publicly reachable API.** Salesforce callouts cannot reach `localhost`.
 
 ```bash
 # terminal 1 — the recommender
@@ -68,27 +70,31 @@ cd backend && PYTHONPATH=src python3 -m uvicorn recsys.serving.app:app --port 80
 ngrok http 8000        # or: cloudflared tunnel --url http://localhost:8000
 ```
 
-Put the resulting `https://...` origin into
-`force-app/main/default/namedCredentials/CineWave_API.namedCredential-meta.xml`
-(the `Url` parameter). It lives in metadata, never in Apex, so the same classes
-promote from scratch org to sandbox to production without an edit.
+Pass the `https://` origin ngrok prints as the argument to `deploy.sh`.
 
-**5. Deploy and assign**
+### Validating without an org
+
+`sf project deploy start` needs an authenticated org, so these checks run
+offline first and catch most of what a failed deploy would have told you:
 
 ```bash
+python3 scripts/validate_source.py
+```
+
+It verifies every class has a meta XML, API versions match, braces balance, all
+endpoints resolve through a Named Credential rather than a hardcoded host, LWC
+Apex imports point at real `@AuraEnabled` methods, the permission set names only
+classes that exist, the invocable action is shaped for Flow, and every test of a
+callout-making class sets a mock.
+
+### Doing it by hand
+
+```bash
+sf org login web --alias cinewave-dev --set-default
+# edit force-app/main/default/namedCredentials/CineWave_API.namedCredential-meta.xml
 sf project deploy start --source-dir force-app
 sf org assign permset --name CineWave_User
-```
-
-**6. Run the Apex tests**
-
-```bash
 sf apex run test --code-coverage --result-format human --wait 10
-```
-
-**7. Try it end to end**
-
-```bash
 sf apex run --file scripts/smoke.apex
 ```
 
